@@ -218,6 +218,37 @@ Describe 'Provider errors and software-update retries' {
     }
 }
 
+Describe 'Asynchronous update helper results' {
+    BeforeEach {
+        $script:statusRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        [IO.Directory]::CreateDirectory($script:statusRoot) | Out-Null
+        $script:resultState = Join-Path $script:statusRoot 'state.json'
+        $script:resultLog = Join-Path $script:statusRoot 'client.log'
+        $script:resultPath = Join-Path $script:statusRoot 'update-result.json'
+    }
+    It 'records helper success once and deletes the consumed result' {
+        $state = Read-ClientState $script:resultState
+        '{"Result":"success"}' | Set-Content -LiteralPath $script:resultPath -Encoding UTF8
+        Read-UpdateResult $script:resultState $state $script:resultLog
+        (Read-ClientState $script:resultState).LastSuccessfulUpdateCheckUtc | Should -Not -BeNullOrEmpty
+        (Test-Path -LiteralPath $script:resultPath) | Should -BeFalse
+    }
+    It 'retains the retry window on helper failure' {
+        $state = Read-ClientState $script:resultState
+        $state.LastUpdateAttemptUtc = [datetime]::UtcNow.ToString('o')
+        Save-ClientState $script:resultState $state
+        '{"Result":"failed"}' | Set-Content -LiteralPath $script:resultPath -Encoding UTF8
+        Read-UpdateResult $script:resultState $state $script:resultLog
+        (Read-ClientState $script:resultState).LastSuccessfulUpdateCheckUtc | Should -BeNullOrEmpty
+        (Test-Path -LiteralPath $script:resultPath) | Should -BeFalse
+    }
+    It 'ignores and removes an invalid helper result' {
+        $state = Read-ClientState $script:resultState
+        '{"Result":"other"}' | Set-Content -LiteralPath $script:resultPath -Encoding UTF8
+        { Read-UpdateResult $script:resultState $state $script:resultLog } | Should -Not -Throw
+        (Test-Path -LiteralPath $script:resultPath) | Should -BeFalse
+    }
+}
 Describe 'Manual channel-based ForceUpgrade' {
     BeforeEach {
         $path = Join-Path $TestDrive ('force-upgrade-' + [guid]::NewGuid().ToString('N') + '.json')
