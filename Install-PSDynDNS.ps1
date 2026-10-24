@@ -177,20 +177,22 @@ function Read-Settings {
 }
 function Save-Settings {
     param($Cfg)
-    if (-not $Cfg.Hostname -or [string]$Cfg.Hostname -notmatch '^[A-Za-z0-9.-]+[.][A-Za-z0-9.-]+$') { throw 'A valid FQDN is required.' }
-    if (-not $Cfg.IPv4Enabled -and -not $Cfg.IPv6Enabled) { throw 'Enable at least one IP family.' }
-    foreach ($entry in @('UpdateUrl','IPv4CheckUrl','IPv6CheckUrl')) { Assert-Url -Value ([string]$Cfg.$entry) -Name $entry }
-    if ($Cfg.UpdateCheckHours -lt 1 -or $Cfg.UpdateCheckHours -gt 720) { throw 'UpdateCheckHours must be 1..720.' }
-    if (-not $Cfg.PSObject.Properties['UpdateChannel']) { $Cfg | Add-Member -NotePropertyName UpdateChannel -NotePropertyValue 'stable' }
-    if ($Cfg.UpdateChannel -notin @('stable','beta','main')) { throw 'Invalid UpdateChannel.' }
-    # Upgrade old installations: the task alone owns its interval.
-    if ($Cfg.PSObject.Properties['IntervalMinutes']) { $Cfg.PSObject.Properties.Remove('IntervalMinutes') }
+    if ($null -eq $Cfg.PSObject.Properties['UpdateChannel']) {
+        Add-Member -InputObject $Cfg -NotePropertyName UpdateChannel -NotePropertyValue 'stable'
+    }
+    if ($null -eq $Cfg.PSObject.Properties['DnsServers']) {
+        Add-Member -InputObject $Cfg -NotePropertyName DnsServers -NotePropertyValue @('8.8.8.8','8.8.4.4')
+    }
+    Assert-PSDynDnsSettings $Cfg
+    # Keep scheduled task repetition interval outside of config.json.
+    if ($null -ne $Cfg.PSObject.Properties['IntervalMinutes']) { $Cfg.PSObject.Properties.Remove('IntervalMinutes') }
     $Cfg | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
     Set-ProtectedAcl $script:ConfigPath -ClientRead
 }
+
 function Apply-Settings {
     param($Cfg)
-    foreach ($name in @('Hostname','Username','UpdateUrl','IPv4Enabled','IPv6Enabled','IPv4CheckUrl','IPv6CheckUrl','AutoUpdate','UpdateCheckHours','UpdateChannel')) {
+    foreach ($name in @('Hostname','Username','UpdateUrl','IPv4Enabled','IPv6Enabled','IPv4CheckUrl','IPv6CheckUrl','AutoUpdate','UpdateCheckHours','UpdateChannel','DnsServers')) {
         # Use only explicitly supplied script arguments. An unspecified typed
         # [string] parameter can otherwise appear as an empty string and
         # erase defaults such as the DynDNS HTTPS endpoint.
@@ -297,7 +299,7 @@ switch ($PSCmdlet.ParameterSetName) {
             IPv4Enabled=$true; IPv6Enabled=$false
             IPv4CheckUrl='https://ipv4.nsupdate.info/myip'
             IPv6CheckUrl='https://ipv6.nsupdate.info/myip'
-            AutoUpdate=$false; UpdateCheckHours=24; UpdateChannel='stable'
+            AutoUpdate=$false; UpdateCheckHours=24; UpdateChannel='stable'; DnsServers=@('8.8.8.8','8.8.4.4')
         }
         $cfg = Apply-Settings $cfg
         Install-ClientFile -Source $LocalClientPath -Channel $cfg.UpdateChannel
@@ -314,7 +316,7 @@ switch ($PSCmdlet.ParameterSetName) {
         Write-Host 'PSDynDNS installed.'
     }
     Configure {
-        $settings = @('Hostname','Username','UpdateUrl','IPv4Enabled','IPv6Enabled','IPv4CheckUrl','IPv6CheckUrl','AutoUpdate','UpdateCheckHours','UpdateChannel','IntervalMinutes','Runtime')
+        $settings = @('Hostname','Username','UpdateUrl','IPv4Enabled','IPv6Enabled','IPv4CheckUrl','IPv6CheckUrl','AutoUpdate','UpdateCheckHours','UpdateChannel','DnsServers','IntervalMinutes','Runtime')
         if (@($settings | Where-Object { $script:InstallerBoundParameters.ContainsKey($_) }).Count -eq 0) {
             throw 'No settings supplied. Pass the settings to change or use -Help.'
         }
