@@ -24,6 +24,7 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:InstallerBoundParameters = @{} + $PSBoundParameters
 $script:Root = Join-Path $env:ProgramData 'PSDynDNS'
 $script:App = Join-Path $script:Root 'app'
 $script:ConfigPath = Join-Path $script:Root 'config.json'
@@ -111,8 +112,12 @@ function Save-Settings {
 function Apply-Settings {
     param($Cfg)
     foreach ($name in @('Hostname','Username','UpdateUrl','IPv4Enabled','IPv6Enabled','IPv4CheckUrl','IPv6CheckUrl','IntervalMinutes','AutoUpdate','UpdateCheckHours','UpdateChannel')) {
-        $value = Get-Variable -Name $name -ValueOnly
-        if ($null -ne $value) { $Cfg.$name = $value }
+        # Use only explicitly supplied script arguments. An unspecified typed
+        # [string] parameter can otherwise appear as an empty string and
+        # erase defaults such as the DynDNS HTTPS endpoint.
+        if ($script:InstallerBoundParameters.ContainsKey($name)) {
+            $Cfg.$name = $script:InstallerBoundParameters[$name]
+        }
     }
     return $Cfg
 }
