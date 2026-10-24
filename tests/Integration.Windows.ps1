@@ -187,9 +187,16 @@ $result | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $runtim
     $bootLog = Join-Path $env:windir 'Temp\PSDynDNS-CI-TaskStarted.txt'
     $errorLog = Join-Path $env:windir 'Temp\PSDynDNS-CI-TaskError.txt'
     Remove-Item -LiteralPath $bootLog,$errorLog -Force -ErrorAction SilentlyContinue
-    $cmd = "try { [IO.File]::WriteAllText('$bootLog','started'); & '$probeFile' } catch { [IO.File]::WriteAllText('$errorLog',[string]\$_.Exception.Message); exit 3 }"
-    # Build the command without interpolating the catch's PowerShell automatic variable.
-    $cmd = $cmd.Replace('\$_.Exception.Message','$_.Exception.Message')
+    $cmd = @'
+try {
+    [IO.File]::WriteAllText('__BOOT__','started')
+    & '__PROBE__'
+} catch {
+    [IO.File]::WriteAllText('__ERR__',[string]$_.Exception.Message)
+    exit 3
+}
+'@
+    $cmd = $cmd.Replace('__BOOT__',$bootLog).Replace('__ERR__',$errorLog).Replace('__PROBE__',$probeFile)
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
     $action = New-ScheduledTaskAction -Execute $powershell -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' + $encoded)
     Set-ScheduledTask -TaskName $script:TaskName -Action $action | Out-Null
