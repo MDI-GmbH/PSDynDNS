@@ -90,7 +90,7 @@ jobs:
           $pesterConfig.CodeCoverage.Enabled = $true
           $pesterConfig.CodeCoverage.Path = @('./PSDynDNS.ps1','./Install-PSDynDNS.ps1')
           $pesterConfig.CodeCoverage.OutputFormat = 'JaCoCo'
-          $pesterConfig.CodeCoverage.OutputPath = 'coverage-ps51.xml'
+          $pesterConfig.CodeCoverage.OutputPath = 'coverage-ps7.xml'
           $result = Invoke-Pester -Configuration $pesterConfig
           if ($null -eq $result.CodeCoverage -or $result.CodeCoverage.CoveragePercent -lt 75) {
             throw 'Code coverage below required 75%.'
