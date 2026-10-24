@@ -57,7 +57,7 @@ $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
 $account = [string]$task.Principal.UserId
 try {
     if ($account -notmatch '^S-\d+-') {
-        $account = (New-Object Security.Principal.NTAccount($account)).Translate(
+        $account = (New-Object Security.Principal.NTAccount -ArgumentList $account).Translate(
             [Security.Principal.SecurityIdentifier]).Value
     }
 } catch {
