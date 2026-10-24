@@ -164,12 +164,23 @@ function Get-LatestRelease {
     if ($state.RetryAfterUtc -and $state.Fingerprint -eq $fingerprint -and $now -lt [datetime]$state.RetryAfterUtc -and -not $Force) { Invoke-SoftwareUpdate $config $state $statePath $logPath; return }
     $ipv4 = $null
     $ipv6 = $null
-    if ($config.IPv4Enabled) { $ipv4 = Get-PublicAddress ([string]$config.IPv4CheckUrl) ([Net.Sockets.AddressFamily]::InterNetwork) }
-    if ($config.IPv6Enabled) { $ipv6 = Get-PublicAddress ([string]$config.IPv6CheckUrl) ([Net.Sockets.AddressFamily]::InterNetworkV6) }
+    try {
+        if ($config.IPv4Enabled) { $ipv4 = Get-PublicAddress ([string]$config.IPv4CheckUrl) ([Net.Sockets.AddressFamily]::InterNetwork) }
+        if ($config.IPv6Enabled) { $ipv6 = Get-PublicAddress ([string]$config.IPv6CheckUrl) ([Net.Sockets.AddressFamily]::InterNetworkV6) }
+    } catch {
+        Write-ClientLog $logPath WARN 'Public address lookup failed; no DNS update sent.'
+        Invoke-SoftwareUpdate $config $state $statePath $logPath
+        return
+    }
     if (-not $Force -and $state.Fingerprint -eq $fingerprint -and $state.LastIPv4 -eq $ipv4 -and $state.LastIPv6 -eq $ipv6) { Invoke-SoftwareUpdate $config $state $statePath $logPath; return }
     $secret = Read-MachineSecret (Join-Path $root 'secret.dpapi')
     $addresses = @($ipv4,$ipv6) | Where-Object { $_ }
-    $response = Invoke-DynDnsRequest $config $secret ($addresses -join ',')
+    try { $response = Invoke-DynDnsRequest $config $secret ($addresses -join ',') }
+    catch {
+        Write-ClientLog $logPath WARN 'DynDNS network request failed; next scheduled run will retry.'
+        Invoke-SoftwareUpdate $config $state $statePath $logPath
+        return
+    }
     $code = ($response -split '\s+')[0]
     $category = Get-ResponseCategory $response
     $newState = [ordered]@{
