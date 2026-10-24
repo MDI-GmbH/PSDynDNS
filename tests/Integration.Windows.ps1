@@ -248,11 +248,23 @@ try {
     Invoke-Installer -Arguments @('-SetKey')
     Assert-Equal (Read-InstalledSecret) $script:CiSecret 'SetKey replaces encrypted credentials'
 
+    # Reproduce a permanent bad-credentials block, then rotate the key.
+    # SetKey must unblock badauth without deleting the entire state file.
+    $authStatePath = Join-Path $script:InstallRoot 'runtime\state.json'
+    '{"BlockedReason":"badauth","RetryAfterUtc":null,"Fingerprint":"old-fingerprint","LastIPv4":"82.149.168.179"}' |
+        Set-Content -LiteralPath $authStatePath -Encoding UTF8
+    Invoke-Installer -Arguments @('-SetKey')
+    $afterKeyRotation = Get-Content -LiteralPath $authStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-True ($null -eq $afterKeyRotation.BlockedReason) 'SetKey unblocks previous badauth status'
+    Assert-Equal $afterKeyRotation.LastIPv4 '82.149.168.179' 'SetKey retains last reported IP'
+
+
     Invoke-Installer -Arguments @(
         '-Hostname','ci-changed.example.invalid',
         '-IPv4Enabled','False', '-IPv6Enabled','True',
         '-IPv6CheckUrl','https://127.0.0.1:1/myipv6',
         '-UpdateChannel','beta',
+        '-DnsServers','1.1.1.1',
         '-IntervalMinutes','15',
         '-UpdateCheckHours','12'
     )
@@ -261,6 +273,7 @@ try {
     Assert-Equal $config.IPv4Enabled $false 'Configure disables IPv4'
     Assert-Equal $config.IPv6Enabled $true 'Configure enables IPv6'
     Assert-Equal $config.UpdateChannel 'beta' 'Configure sets update channel'
+    Assert-Equal @($config.DnsServers)[0] '1.1.1.1' 'Configure updates DNS server list'
     Assert-True (-not (@($config.PSObject.Properties | ForEach-Object { $_.Name }) -contains 'IntervalMinutes')) 'Task interval is not stored in JSON'
     $task = Get-ScheduledTask -TaskName $script:TaskName
     Assert-True (([string]$task.Triggers[0].Repetition.Interval -match '15M')) 'Setting parameter updates task repetition interval'
