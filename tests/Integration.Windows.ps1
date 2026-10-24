@@ -1,0 +1,227 @@
+#requires -Version 5.1
+<#
+.SYNOPSIS
+  Destructive, isolated Windows integration test for GitHub-hosted Windows runners.
+.DESCRIPTION
+  Exercises the actual installer and Windows Task Scheduler under LOCAL SERVICE.
+  Uses only synthetic credentials and a loopback HTTPS URL that cannot alter DNS.
+  This test MUST NOT be executed on production machines.
+#>
+[CmdletBinding()]
+param()
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$script:Project = Split-Path -Parent $PSScriptRoot
+$script:Installer = Join-Path $script:Project 'Install-PSDynDNS.ps1'
+$script:Source = Join-Path $script:Project 'PSDynDNS.ps1'
+$script:InstallRoot = Join-Path $env:ProgramData 'PSDynDNS'
+$script:TaskName = 'PSDynDNS'
+$script:CiSecret = 'ci-test-first-secret-only'
+$script:Installed = $false
+
+function Assert-True {
+    param([bool]$Condition, [string]$Message)
+    if (-not $Condition) { throw "INTEGRATION ASSERT FAILED: $Message" }
+    Write-Host "PASS: $Message"
+}
+function Assert-Equal {
+    param($Actual,$Expected,[string]$Message)
+    if ([string]$Actual -ne [string]$Expected) {
+        throw "INTEGRATION ASSERT FAILED: $Message (actual '$Actual', expected '$Expected')"
+    }
+    Write-Host "PASS: $Message"
+}
+function Test-WindowsAdmin {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# The installer deliberately prompts for the secret. Override Read-Host in this
+# test runspace so it receives a SecureString without prompts or real credentials.
+function Read-Host {
+    param([string]$Prompt, [switch]$AsSecureString)
+    if (-not $AsSecureString) { throw 'Unexpected interactive prompt in CI.' }
+    return ConvertTo-SecureString -String $script:CiSecret -AsPlainText -Force
+}
+
+function Invoke-Installer {
+    param([string[]]$Arguments)
+    & $script:Installer @Arguments
+}
+
+function Read-InstalledSecret {
+    Add-Type -AssemblyName System.Security
+    $secretPath = Join-Path $script:InstallRoot 'secret.dpapi'
+    $bytes = [Security.Cryptography.ProtectedData]::Unprotect(
+        [IO.File]::ReadAllBytes($secretPath),
+        $null,
+        [Security.Cryptography.DataProtectionScope]::LocalMachine)
+    try { return [Text.Encoding]::UTF8.GetString($bytes) }
+    finally { [Array]::Clear($bytes,0,$bytes.Length) }
+}
+
+function Wait-File {
+    param([string]$Path,[int]$Seconds=45)
+    for ($i=0;$i -lt ($Seconds * 2);$i++) {
+        if (Test-Path -LiteralPath $Path -PathType Leaf) { return }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "Timed out waiting for Task Scheduler output: $Path"
+}
+function Wait-TaskStopped {
+    param([int]$Seconds=35)
+    for ($i=0;$i -lt ($Seconds * 2);$i++) {
+        $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
+        if (-not $task -or $task.State -ne 'Running') { return }
+        Start-Sleep -Milliseconds 500
+    }
+    throw 'Task Scheduler did not finish before timeout.'
+}
+function Start-LocalServiceProbe {
+    # Temporarily change only the ACTION of the real registered task.
+    # We must keep the task identity/SID to test permissions correctly.
+    # -Repair restores the original action afterwards.
+    $sourceCode = @'
+$ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'PSDynDNS.ps1')
+$root = Split-Path -Parent $PSScriptRoot
+$cfg = Read-ClientConfig (Join-Path $root 'config.json')
+$key = Read-MachineSecret (Join-Path $root 'secret.dpapi')
+$runtime = Join-Path $root 'runtime'
+$canRead = ($cfg.Hostname -eq 'ci-changed.example.invalid' -and $key -eq 'ci-test-second-secret-only')
+$canWriteRuntime = $false
+$canWriteApp = $false
+$canWriteConfig = $false
+$canWriteSecret = $false
+try {
+    $path = Join-Path $runtime 'service-probe.tmp'
+    [IO.File]::WriteAllText($path,'ok')
+    Remove-Item -LiteralPath $path -Force
+    $canWriteRuntime = $true
+} catch {}
+try {
+    $path = Join-Path $PSScriptRoot 'service-probe.tmp'
+    [IO.File]::WriteAllText($path,'ok')
+    Remove-Item -LiteralPath $path -Force
+    $canWriteApp = $true
+} catch {}
+try {
+    $stream = [IO.File]::Open((Join-Path $root 'config.json'),[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)
+    $stream.Dispose()
+    $canWriteConfig = $true
+} catch {}
+try {
+    $stream = [IO.File]::Open((Join-Path $root 'secret.dpapi'),[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)
+    $stream.Dispose()
+    $canWriteSecret = $true
+} catch {}
+$result = [pscustomobject]@{
+    CanReadConfigAndDpapi=$canRead
+    CanWriteRuntime=$canWriteRuntime
+    CanWriteApp=$canWriteApp
+    CanWriteConfig=$canWriteConfig
+    CanWriteSecret=$canWriteSecret
+    Account=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+}
+$result | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $runtime 'service-probe.json') -Encoding UTF8
+'@
+    $probeFile = Join-Path (Join-Path $script:InstallRoot 'app') 'CI-LocalService-Probe.ps1'
+    [IO.File]::WriteAllText($probeFile,$sourceCode,(New-Object Text.UTF8Encoding($false)))
+    $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $action = New-ScheduledTaskAction -Execute $powershell -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $probeFile + '"')
+    Set-ScheduledTask -TaskName $script:TaskName -Action $action | Out-Null
+    $outFile = Join-Path (Join-Path $script:InstallRoot 'runtime') 'service-probe.json'
+    Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
+    Start-ScheduledTask -TaskName $script:TaskName
+    Wait-File -Path $outFile
+    Wait-TaskStopped
+    return Get-Content -LiteralPath $outFile -Raw -Encoding UTF8 | ConvertFrom-Json
+}
+
+Write-Host 'Running isolated PSDynDNS Windows installation integration test.'
+Assert-True (Test-WindowsAdmin) 'GitHub Windows runner is elevated'
+Assert-True (-not (Test-Path -LiteralPath $script:InstallRoot)) 'No existing PSDynDNS installation on isolated CI runner'
+Assert-True (-not (Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue)) 'No existing PSDynDNS scheduled task'
+try {
+    # LOCALHOST / port 1 cannot update DNS; we are only testing lifecycle and ACLs.
+    Invoke-Installer -Arguments @(
+        '-Install', '-Hostname','ci-initial.example.invalid',
+        '-IPv4Enabled','True', '-IPv6Enabled','False',
+        '-IPv4CheckUrl','https://127.0.0.1:1/myip',
+        '-UpdateUrl','https://127.0.0.1:1/nic/update',
+        '-AutoUpdate','False',
+        '-LocalClientPath',$script:Source
+    )
+    $script:Installed = $true
+    Assert-True (Test-Path -LiteralPath (Join-Path $script:InstallRoot 'app\PSDynDNS.ps1')) 'Client script installed'
+    Assert-True (Test-Path -LiteralPath (Join-Path $script:InstallRoot 'runtime\state.json')) 'Runtime state initialized'
+    Assert-Equal (Read-InstalledSecret) $script:CiSecret 'Installer stores a decryptable machine DPAPI secret'
+    Assert-Equal (Get-FileHash -LiteralPath (Join-Path $script:InstallRoot 'app\PSDynDNS.ps1') -Algorithm SHA256).Hash (Get-FileHash -LiteralPath $script:Source -Algorithm SHA256).Hash 'Installed client matches repository script'
+
+    $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop
+    Assert-Equal ([string]$task.Principal.ProcessTokenSidType) 'Unrestricted' 'Scheduled task has an unrestricted task SID'
+    Assert-True (([string]$task.Principal.UserId -match 'LOCAL.?SERVICE|LOCALSERVICE|S-1-5-19')) 'Scheduled task runs as LOCAL SERVICE'
+
+    $script:CiSecret = 'ci-test-second-secret-only'
+    Invoke-Installer -Arguments @('-SetKey')
+    Assert-Equal (Read-InstalledSecret) $script:CiSecret 'SetKey replaces encrypted credentials'
+
+    Invoke-Installer -Arguments @(
+        '-Configure', '-Hostname','ci-changed.example.invalid',
+        '-IPv4Enabled','False', '-IPv6Enabled','True',
+        '-IPv6CheckUrl','https://127.0.0.1:1/myipv6',
+        '-UpdateChannel','beta',
+        '-IntervalMinutes','15',
+        '-UpdateCheckHours','12'
+    )
+    $config = Get-Content -LiteralPath (Join-Path $script:InstallRoot 'config.json') -Raw | ConvertFrom-Json
+    Assert-Equal $config.Hostname 'ci-changed.example.invalid' 'Configure updates the host'
+    Assert-Equal $config.IPv4Enabled $false 'Configure disables IPv4'
+    Assert-Equal $config.IPv6Enabled $true 'Configure enables IPv6'
+    Assert-Equal $config.UpdateChannel 'beta' 'Configure sets update channel'
+    Assert-Equal $config.IntervalMinutes 15 'Configure updates interval'
+    $task = Get-ScheduledTask -TaskName $script:TaskName
+    Assert-True (([string]$task.Triggers[0].Repetition.Interval -match '15M')) 'Configure updates task repetition interval'
+
+    $probe = Start-LocalServiceProbe
+    Assert-Equal $probe.Account 'S-1-5-19' 'Probe actually runs as LOCAL SERVICE'
+    Assert-True $probe.CanReadConfigAndDpapi 'LOCAL SERVICE task can read config and decrypt DPAPI secret'
+    Assert-True $probe.CanWriteRuntime 'Task can modify runtime directory'
+    Assert-True $probe.CanWriteApp 'Task can modify app directory for updates'
+    Assert-True (-not $probe.CanWriteConfig) 'Task cannot modify configuration'
+    Assert-True (-not $probe.CanWriteSecret) 'Task cannot modify secret'
+
+    Invoke-Installer -Arguments @('-Repair')
+    $task = Get-ScheduledTask -TaskName $script:TaskName
+    Assert-True (([string]$task.Actions[0].Arguments -match 'PSDynDNS[.]ps1')) 'Repair restores real client task action'
+    Assert-Equal (Read-InstalledSecret) $script:CiSecret 'Repair preserves credentials'
+
+    $stateFile = Join-Path $script:InstallRoot 'runtime\state.json'
+    '{"BlockedReason":"badauth"}' | Set-Content -LiteralPath $stateFile -Encoding UTF8
+    Invoke-Installer -Arguments @('-ResetState')
+    $state = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
+    Assert-True (-not ($state.PSObject.Properties.Name -contains 'BlockedReason')) 'ResetState clears blocked provider state'
+
+    Invoke-Installer -Arguments @('-Uninstall')
+    Assert-True (-not (Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue)) 'Uninstall removes the scheduled task'
+    Assert-True (Test-Path -LiteralPath (Join-Path $script:InstallRoot 'config.json')) 'Uninstall retains configuration'
+    Assert-True (Test-Path -LiteralPath (Join-Path $script:InstallRoot 'secret.dpapi')) 'Uninstall retains DPAPI secret'
+    Invoke-Installer -Arguments @('-Uninstall','-Purge')
+    Assert-True (-not (Test-Path -LiteralPath $script:InstallRoot)) 'Purge removes remaining configuration and runtime data'
+    $script:Installed = $false
+    Write-Host 'SUCCESS: Installer, SetKey, Configure, task SID, DPAPI, Repair, ResetState, Uninstall and Purge verified.'
+}
+finally {
+    if ($script:Installed -or (Test-Path -LiteralPath $script:InstallRoot)) {
+        Write-Warning 'Cleaning up CI installation.'
+        try {
+            $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
+            if ($task -and $task.State -eq 'Running') { Stop-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue }
+            & $script:Installer -Uninstall -Purge
+        } catch { Write-Warning 'Installer cleanup failed; deleting CI task and directory directly.' }
+        Unregister-ScheduledTask -TaskName $script:TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $script:InstallRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
