@@ -242,12 +242,23 @@ try {
         throw
     }
 }
+function ConvertFrom-UtcTimestamp {
+    param($Value)
+    if ($Value -is [datetimeoffset]) { return $Value.UtcDateTime }
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime() }
+    return [datetimeoffset]::ParseExact(
+        [string]$Value,
+        'o',
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind
+    ).UtcDateTime
+}
 function Invoke-SoftwareUpdate {
     param($Config,$State,[string]$StatePath,[string]$LogPath)
     if (-not $Config.AutoUpdate) { return }
     $now = [datetime]::UtcNow
     if ($State.LastUpdateCheckUtc) {
-        try { if ($now -lt ([datetime]$State.LastUpdateCheckUtc).AddHours([int]$Config.UpdateCheckHours)) { return } } catch {}
+        try { if ($now -lt (ConvertFrom-UtcTimestamp $State.LastUpdateCheckUtc).AddHours([int]$Config.UpdateCheckHours)) { return } } catch {}
     }
     $State.LastUpdateCheckUtc = $now.ToString('o')
     Save-ClientState $StatePath $State
@@ -280,7 +291,7 @@ function Invoke-Client {
         Invoke-SoftwareUpdate $config $state $statePath $logPath
         return
     }
-    if ($state.RetryAfterUtc -and $state.Fingerprint -eq $fingerprint -and $now -lt [datetime]$state.RetryAfterUtc -and -not $Force) { Invoke-SoftwareUpdate $config $state $statePath $logPath; return }
+    if ($state.RetryAfterUtc -and $state.Fingerprint -eq $fingerprint -and $now -lt (ConvertFrom-UtcTimestamp $state.RetryAfterUtc) -and -not $Force) { Invoke-SoftwareUpdate $config $state $statePath $logPath; return }
     $ipv4 = $null
     $ipv6 = $null
     if ($config.IPv4Enabled) { $ipv4 = Get-PublicAddress ([string]$config.IPv4CheckUrl) ([Net.Sockets.AddressFamily]::InterNetwork) }
