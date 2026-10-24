@@ -82,3 +82,20 @@ Describe 'Release response handling' {
         Should -Invoke Get-LatestRelease -Times 0
     }
 }
+
+Describe 'Update channels and release ordering' {
+    It 'compares releases using semantic ordering' {
+        $candidate = [pscustomobject]@{ Channel='beta';Version=[version]'0.1.0';Rank=4;PreNumber=0 }
+        Test-CandidateNewer $candidate | Should -BeTrue
+        $candidate = [pscustomobject]@{ Channel='stable';Version=[version]'0.0.9';Rank=4;PreNumber=0 }
+        Test-CandidateNewer $candidate | Should -BeFalse
+    }
+    It 'treats main as a source comparison rather than a SemVer comparison' {
+        Test-CandidateNewer ([pscustomobject]@{ Channel='main' }) | Should -BeTrue
+    }
+    It 'uses stable by default if config predates update channels' {
+        $config = [pscustomobject]@{AutoUpdate=$false;UpdateCheckHours=24}
+        $state = [pscustomobject]@{LastUpdateCheckUtc=$null}
+        { Invoke-SoftwareUpdate $config $state (Join-Path $TestDrive 'state.json') (Join-Path $TestDrive 'log.txt') } | Should -Not -Throw
+    }
+}
