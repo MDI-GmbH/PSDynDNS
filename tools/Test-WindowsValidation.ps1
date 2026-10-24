@@ -38,7 +38,7 @@ function Assert-Check {
     }
 }
 
-if (-not $IsWindows -and $PSVersionTable.PSEdition -eq 'Core') {
+if ($env:OS -ne 'Windows_NT') {
     throw 'Windows is required.'
 }
 foreach ($path in @($root, $app, $runtime, $client, $configPath, $secretPath)) {
@@ -57,8 +57,8 @@ $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
 $account = [string]$task.Principal.UserId
 try {
     if ($account -notmatch '^S-\d+-') {
-        $account = (New-Object Security.Principal.NTAccount($account)).
-            Translate([Security.Principal.SecurityIdentifier]).Value
+        $account = (New-Object Security.Principal.NTAccount($account)).Translate(
+            [Security.Principal.SecurityIdentifier]).Value
     }
 } catch {
     throw ('Could not resolve Scheduled Task account: ' + $task.Principal.UserId)
