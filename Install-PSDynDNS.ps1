@@ -162,7 +162,8 @@ function Install-Task {
     }
     $action = New-ScheduledTaskAction -Execute $exe -Argument $args
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $Minutes)
-    $principal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\LOCAL SERVICE' -LogonType ServiceAccount -RunLevel Limited -ProcessTokenSidType Unrestricted
+    # Use the well-known LocalService SID so registration works on all Windows UI languages.
+    $principal = New-ScheduledTaskPrincipal -UserId $script:ServiceSid -LogonType ServiceAccount -RunLevel Limited -ProcessTokenSidType Unrestricted
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -StartWhenAvailable
     Register-ScheduledTask -TaskName $script:TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 }
