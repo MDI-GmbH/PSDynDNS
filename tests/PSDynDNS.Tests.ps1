@@ -99,3 +99,33 @@ Describe 'Update channels and release ordering' {
         { Invoke-SoftwareUpdate $config $state (Join-Path $TestDrive 'state.json') (Join-Path $TestDrive 'log.txt') } | Should -Not -Throw
     }
 }
+
+Describe 'Locale-independent persisted timestamps and fingerprints' {
+    It 'parses roundtrip timestamps identically under multiple cultures' {
+        $originalCulture = [Threading.Thread]::CurrentThread.CurrentCulture
+        $originalUi = [Threading.Thread]::CurrentThread.CurrentUICulture
+        try {
+            $utc = [datetime]::SpecifyKind([datetime]'2026-10-24T16:07:08', [DateTimeKind]::Utc)
+            $roundtrip = $utc.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+            foreach ($name in @('en-US','de-DE','fr-FR','tr-TR')) {
+                $culture = [Globalization.CultureInfo]::GetCultureInfo($name)
+                [Threading.Thread]::CurrentThread.CurrentCulture = $culture
+                [Threading.Thread]::CurrentThread.CurrentUICulture = $culture
+                (ConvertFrom-UtcTimestamp $roundtrip).Ticks | Should -Be $utc.Ticks
+                (ConvertFrom-UtcTimestamp $utc).Ticks | Should -Be $utc.Ticks
+                $cfg = [pscustomobject]@{
+                    Hostname = 'test.example.org'; Username = $null
+                    UpdateUrl = 'https://example.org/nic/update'
+                    IPv4Enabled = $true; IPv6Enabled = $false
+                }
+                $fingerprint = Get-ConfigurationFingerprint $cfg
+                $fingerprint | Should -Match '^[a-f0-9]{64}$'
+                if ($name -eq 'en-US') { $expected = $fingerprint }
+                else { $fingerprint | Should -Be $expected }
+            }
+        } finally {
+            [Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture
+            [Threading.Thread]::CurrentThread.CurrentUICulture = $originalUi
+        }
+    }
+}
