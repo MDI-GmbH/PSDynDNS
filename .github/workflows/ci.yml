@@ -75,32 +75,35 @@ jobs:
           $result = Invoke-Pester -Path ./tests/PSDynDNS.Tests.ps1 -PassThru -Output Detailed
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 compatibility tests failed.' }
 
-  integration:
+  integration-ps51:
+    name: integration-ps51
     needs: [test, pwsh7]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runtime: WindowsPowerShell
-            shell: powershell
-          - runtime: PowerShell7
-            shell: pwsh
-    name: integration-${{ matrix.runtime }}
     runs-on: windows-2022
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
-      - name: Exercise actual bootstrap installer and LOCAL SERVICE scheduled task
-        shell: ${{ matrix.shell }}
-        env:
-          TEST_RUNTIME: ${{ matrix.runtime }}
+      - name: Install and run under Windows PowerShell 5.1
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          & ./tests/Integration.Windows.ps1 -Runtime $env:TEST_RUNTIME
+          & ./tests/Integration.Windows.ps1 -Runtime WindowsPowerShell
+
+  integration-ps7:
+    name: integration-ps7
+    needs: [test, pwsh7]
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and run under PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./tests/Integration.Windows.ps1 -Runtime PowerShell7
 
   build:
     name: build
-    needs: [test, pwsh7, integration]
+    needs: [test, pwsh7, integration-ps51, integration-ps7]
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: windows-2022
     timeout-minutes: 5
