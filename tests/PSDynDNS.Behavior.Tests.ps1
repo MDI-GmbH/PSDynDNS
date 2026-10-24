@@ -352,6 +352,37 @@ Describe 'Provider errors and software-update retries' {
         { Invoke-Client -Path $script:testConfig -Force $false } | Should -Not -Throw
         Should -Invoke Invoke-DynDnsRequest -Times 1 -Exactly
     }
+    It 'logs Windows DNS fallback and skips provider when the system answer matches' {
+        Mock Get-DnsComparison {
+            [pscustomobject]@{
+                Matches=$true; Observation='A=9.9.9.9;AAAA='; ResolverSource='system'
+            }
+        }
+        Mock Invoke-DynDnsRequest { throw 'Provider must not be contacted' }
+        { Invoke-Client -Path $script:testConfig -Force $false } | Should -Not -Throw
+        Should -Invoke Invoke-DynDnsRequest -Times 0 -Exactly
+        $log = Get-Content -LiteralPath (Join-Path (Split-Path $script:testState) 'client.log') -Raw
+        $log | Should -Match 'Preferred DNS resolvers unavailable'
+    }
+    It 'logs Windows DNS fallback and updates provider when the system answer differs' {
+        Mock Get-DnsComparison {
+            [pscustomobject]@{
+                Matches=$false; Observation='A=203.0.113.10;AAAA='; ResolverSource='system'
+            }
+        }
+        Mock Invoke-DynDnsRequest { 'good 9.9.9.9' }
+        { Invoke-Client -Path $script:testConfig -Force $false } | Should -Not -Throw
+        Should -Invoke Invoke-DynDnsRequest -Times 1 -Exactly
+        (Read-ClientState $script:testState).LastIPv4 | Should -Be '9.9.9.9'
+        $log = Get-Content -LiteralPath (Join-Path (Split-Path $script:testState) 'client.log') -Raw
+        $log | Should -Match 'Preferred DNS resolvers unavailable'
+    }
+    It 'does not contact the provider when both preferred and system DNS fail' {
+        Mock Get-DnsComparison { throw 'DNS lookup for A via Windows system DNS failed: simulated timeout' }
+        Mock Invoke-DynDnsRequest { throw 'Provider must not be contacted' }
+        { Invoke-Client -Path $script:testConfig -Force $false } | Should -Throw '*Windows system DNS*'
+        Should -Invoke Invoke-DynDnsRequest -Times 0 -Exactly
+    }
     It 'skips the DynDNS provider when DNS already matches' {
         Mock Get-DnsComparison { [pscustomobject]@{Matches=$true;Observation='A=9.9.9.9;AAAA='} }
         Mock Invoke-DynDnsRequest { throw 'Provider must not be contacted' }
