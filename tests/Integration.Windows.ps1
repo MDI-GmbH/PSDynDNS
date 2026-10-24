@@ -270,7 +270,7 @@ try {
     '{"BlockedReason":"badauth"}' | Set-Content -LiteralPath $stateFile -Encoding UTF8
     Invoke-Installer -Arguments @('-ResetState')
     $state = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
-    Assert-True (-not ($state.PSObject.Properties.Name -contains 'BlockedReason')) 'ResetState clears blocked provider state'
+    Assert-True (-not (@($state.PSObject.Properties | ForEach-Object { $_.Name }) -contains 'BlockedReason')) 'ResetState clears blocked provider state'
 
     Invoke-Installer -Arguments @('-Uninstall')
     Assert-True (-not (Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue)) 'Uninstall removes the scheduled task'
