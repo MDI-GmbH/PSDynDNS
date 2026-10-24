@@ -64,7 +64,7 @@ function Get-PublicAddress {
     $result = (Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 15 -MaximumRedirection 0 -Headers @{ 'User-Agent' = $script:UserAgent }).Content.Trim()
     $address = $null
     if (-not [Net.IPAddress]::TryParse($result, [ref]$address) -or $address.AddressFamily -ne $Family) { throw 'IP-check response is not an address of the expected family.' }
-    if ([Net.IPAddress]::IsLoopback($address) -or $address.IsIPv6LinkLocal -or $address.IsIPv6Multicast -or $address.Equals([Net.IPAddress]::Any) -or $address.Equals([Net.IPAddress]::IPv6Any)) {
+    if (-not (Test-PublicIp $address)) {
         throw 'IP-check returned a non-routable address.'
     }
     return $address.ToString()
@@ -95,14 +95,14 @@ function Get-ResponseCategory {
     if ($code -in @('good','nochg')) { return 'success' }
     if ($code -in @('badauth','notfqdn','nohost','numhost','abuse','badagent','!donator','!yours')) { return 'blocked' }
     if ($code -in @('dnserr','911')) { return 'retry' }
-    return 'retry'
+    return 'unknown'
 }
 
 function Read-ClientState {
     param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) { return [pscustomobject]@{ LastIPv4=$null; LastIPv6=$null; Fingerprint=$null; BlockedReason=$null; RetryAfterUtc=$null } }
+    if (-not (Test-Path -LiteralPath $Path)) { return [pscustomobject]@{ LastIPv4=$null; LastIPv6=$null; Fingerprint=$null; BlockedReason=$null; RetryAfterUtc=$null; LastUpdateCheckUtc=$null } }
     try { $state = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
-        foreach ($property in @('LastIPv4','LastIPv6','Fingerprint','BlockedReason','RetryAfterUtc')) {
+        foreach ($property in @('LastIPv4','LastIPv6','Fingerprint','BlockedReason','RetryAfterUtc','LastUpdateCheckUtc')) {
             if (-not ($state.PSObject.Properties.Name -contains $property)) { $state | Add-Member -NotePropertyName $property -NotePropertyValue $null }
         }
         return $state }
@@ -129,21 +129,39 @@ function Write-ClientLog {
     Add-Content -LiteralPath $Path -Value $line -Encoding UTF8
 }
 
+function Test-PublicIp {
+    param([Net.IPAddress]$Address)
+    if ([Net.IPAddress]::IsLoopback($Address) -or $Address.Equals([Net.IPAddress]::Any) -or $Address.Equals([Net.IPAddress]::IPv6Any)) { return $false }
+    $bytes = $Address.GetAddressBytes()
+    if ($Address.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetworkV6) {
+        return ((($bytes[0] -band 0xE0) -eq 0x20) -and -not $Address.IsIPv6Multicast -and -not $Address.IsIPv6LinkLocal)
+    }
+    return ($bytes[0] -gt 0 -and $bytes[0] -lt 224 -and $bytes[0] -ne 10 -and $bytes[0] -ne 127 -and
+        -not ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and $bytes[1] -le 31) -and
+        -not ($bytes[0] -eq 192 -and $bytes[1] -eq 168) -and
+        -not ($bytes[0] -eq 169 -and $bytes[1] -eq 254) -and
+        -not ($bytes[0] -eq 100 -and $bytes[1] -ge 64 -and $bytes[1] -le 127) -and
+        -not ($bytes[0] -eq 192 -and $bytes[1] -eq 0 -and $bytes[2] -eq 2) -and
+        -not ($bytes[0] -eq 198 -and $bytes[1] -eq 51 -and $bytes[2] -eq 100) -and
+        -not ($bytes[0] -eq 203 -and $bytes[1] -eq 0 -and $bytes[2] -eq 113))
+}
+
 function Invoke-Client {
     param([string]$Path, [bool]$Force)
     $fullPath = [IO.Path]::GetFullPath($Path)
     $root = Split-Path -Parent $fullPath
-    $logPath = Join-Path $root 'client.log'
+    $runtime = Join-Path $root 'runtime'
+    $logPath = Join-Path $runtime 'client.log'
     $config = Read-ClientConfig $fullPath
-    $statePath = Join-Path $root 'state.json'
+    $statePath = Join-Path $runtime 'state.json'
     $state = Read-ClientState $statePath
     $now = (Get-Date).ToUniversalTime()
     $fingerprint = Get-ConfigurationFingerprint $config
-    if ($state.BlockedReason -and -not $Force) {
+    if ($state.BlockedReason -and $state.Fingerprint -eq $fingerprint -and -not $Force) {
         Write-ClientLog $logPath WARN 'Update blocked; administrator must correct issue and reset state.'
         return
     }
-    if ($state.RetryAfterUtc -and $now -lt [datetime]$state.RetryAfterUtc -and -not $Force) { return }
+    if ($state.RetryAfterUtc -and $state.Fingerprint -eq $fingerprint -and $now -lt [datetime]$state.RetryAfterUtc -and -not $Force) { return }
     $ipv4 = $null
     $ipv6 = $null
     if ($config.IPv4Enabled) { $ipv4 = Get-PublicAddress ([string]$config.IPv4CheckUrl) ([Net.Sockets.AddressFamily]::InterNetwork) }
@@ -160,6 +178,7 @@ function Invoke-Client {
         LastIPv6 = $state.LastIPv6
         BlockedReason = $null
         RetryAfterUtc = $null
+        LastUpdateCheckUtc = $state.LastUpdateCheckUtc
     }
     switch ($category) {
         success {
@@ -169,12 +188,17 @@ function Invoke-Client {
         }
         blocked {
             $newState.BlockedReason = $code
+            $newState.Fingerprint = $fingerprint
             Write-ClientLog $logPath ERROR "DynDNS update blocked: $code"
         }
         retry {
+            $newState.Fingerprint = $fingerprint
             $newState.RetryAfterUtc = $now.AddMinutes(30).ToString('o')
             Write-ClientLog $logPath WARN "DynDNS provider requested retry: $code"
         }
+    }
+    if ($category -eq 'unknown') {
+        throw 'Unrecognized DynDNS2 provider response.'
     }
     Save-ClientState $statePath $newState
 }
@@ -186,9 +210,9 @@ if ($MyInvocation.InvocationName -ne '.') {
         $message = $_.Exception.Message
         try {
             $root = Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))
-            Write-ClientLog (Join-Path $root 'client.log') ERROR $message
+            Write-ClientLog (Join-Path (Join-Path $root 'runtime') 'client.log') ERROR 'DynDNS run failed. See configuration and network.'
         } catch { }
-        Write-Error $message
+        Write-Error 'DynDNS run failed; see client.log.'
         exit 1
     }
 }
