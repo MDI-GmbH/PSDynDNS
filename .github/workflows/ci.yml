@@ -23,7 +23,12 @@ jobs:
             $tokens = $null
             $parseErrors = $null
             $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file), [ref]$tokens, [ref]$parseErrors)
-            if ($parseErrors.Count) { $parseErrors | Format-List | Out-String | Write-Error; exit 1 }
+            if ($parseErrors.Count) {
+              foreach ($e in $parseErrors) {
+                Write-Host ("PARSE ERROR in {0} at {1}:{2}: {3}" -f $file, $e.Extent.StartLineNumber, $e.Extent.StartColumnNumber, $e.Message)
+              }
+              exit 1
+            }
           }
       - name: Install Pester 5
         shell: powershell
