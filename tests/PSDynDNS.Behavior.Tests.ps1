@@ -228,6 +228,36 @@ Describe 'Windows DNS fallback after preferred resolvers fail' {
         Should -Invoke Resolve-DnsName -Times 2 -Exactly -ParameterFilter { (-not [string]::IsNullOrEmpty([string]$Server)) }
         Should -Invoke Resolve-DnsName -Times 2 -Exactly -ParameterFilter { -not (-not [string]::IsNullOrEmpty([string]$Server)) }
     }
+    It 'rejects two disagreeing preferred answers before a third resolver can time out' {
+        Mock Resolve-DnsName {
+            if ([string]::IsNullOrEmpty([string]$Server)) { throw 'System DNS must not be reached' }
+            switch ($Server) {
+                '8.8.8.8' { [pscustomobject]@{ Type='A'; IPAddress='203.0.113.10' }; break }
+                '8.8.4.4' { [pscustomobject]@{ Type='A'; IPAddress='203.0.113.11' }; break }
+                '1.1.1.1' { throw 'Simulated third resolver timeout' }
+                default { throw 'Unexpected resolver' }
+            }
+        }
+        { Get-DnsComparison -Hostname 'client.example.org' -Servers @('8.8.8.8','8.8.4.4','1.1.1.1') -IPv4 '203.0.113.10' -IPv4Enabled $true -IPv6Enabled $false } |
+            Should -Throw '*disagree*'
+        Should -Invoke Resolve-DnsName -Times 1 -Exactly -ParameterFilter { $Server -eq '8.8.8.8' }
+        Should -Invoke Resolve-DnsName -Times 1 -Exactly -ParameterFilter { $Server -eq '8.8.4.4' }
+        Should -Invoke Resolve-DnsName -Times 0 -Exactly -ParameterFilter { $Server -eq '1.1.1.1' }
+        Should -Invoke Resolve-DnsName -Times 0 -Exactly -ParameterFilter { [string]::IsNullOrEmpty([string]$Server) }
+    }
+    It 'still falls back when two preferred answers agree and the third times out' {
+        Mock Resolve-DnsName {
+            if ($Server -eq '1.1.1.1') { throw 'Simulated third resolver timeout' }
+            [pscustomobject]@{ Type='A'; IPAddress='203.0.113.10' }
+        }
+        $comparison = Get-DnsComparison -Hostname 'client.example.org' -Servers @('8.8.8.8','8.8.4.4','1.1.1.1') -IPv4 '203.0.113.10' -IPv4Enabled $true -IPv6Enabled $false
+        $comparison.Matches | Should -BeTrue
+        $comparison.ResolverSource | Should -Be 'system'
+        Should -Invoke Resolve-DnsName -Times 1 -Exactly -ParameterFilter { $Server -eq '8.8.8.8' }
+        Should -Invoke Resolve-DnsName -Times 1 -Exactly -ParameterFilter { $Server -eq '8.8.4.4' }
+        Should -Invoke Resolve-DnsName -Times 1 -Exactly -ParameterFilter { $Server -eq '1.1.1.1' }
+        Should -Invoke Resolve-DnsName -Times 1 -Exactly -ParameterFilter { [string]::IsNullOrEmpty([string]$Server) }
+    }
     It 'does not fall back on conflicting answers from preferred resolvers' {
         Mock Resolve-DnsName {
             if (-not (-not [string]::IsNullOrEmpty([string]$Server))) { throw 'System DNS must not be reached' }

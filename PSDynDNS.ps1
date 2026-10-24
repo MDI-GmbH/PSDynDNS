@@ -210,11 +210,13 @@ function Get-PublishedDnsAddresses {
         }
         $values = @($records | Where-Object { [string]$_.Type -eq $RecordType -and $_.IPAddress } |
             ForEach-Object { ([Net.IPAddress]::Parse([string]$_.IPAddress)).ToString() } | Sort-Object -Unique)
+        # Check agreement immediately. A later resolver timeout must not
+        # suppress conflicting answers and trigger Windows DNS fallback.
+        if ($observations.Count -gt 0 -and
+            (@($values) -join ',') -ne (@($observations[0].Addresses) -join ',')) {
+            throw "DNS resolvers disagree about $RecordType records; retry after cache TTL."
+        }
         $observations += [pscustomobject]@{Server=$server;Addresses=$values}
-    }
-    $first = (@($observations[0].Addresses) -join ',')
-    foreach ($observation in $observations) {
-        if ((@($observation.Addresses) -join ',') -ne $first) { throw "DNS resolvers disagree about $RecordType records; retry after cache TTL." }
     }
     return @($observations[0].Addresses)
 }
