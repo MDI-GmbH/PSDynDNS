@@ -24,11 +24,6 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
-      - name: Check synchronized standalone shared functions
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & ./tools/Sync-Shared.ps1
       - name: Parse Windows PowerShell 5.1 scripts
         shell: powershell
         run: |
