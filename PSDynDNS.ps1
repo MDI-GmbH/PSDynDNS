@@ -9,7 +9,9 @@
 [CmdletBinding()]
 param(
     [string]$ConfigPath,
-    [switch]$ForceDnsUpdate
+    [switch]$ForceDnsUpdate,
+    [switch]$ForceUpgrade,
+    [ValidateSet('stable','beta','main')][string]$UpgradeChannel
 )
 
 Set-StrictMode -Version Latest
@@ -397,6 +399,27 @@ function Invoke-SoftwareUpdate {
     }
 }
 
+function Invoke-ForcedUpgrade {
+    param([string]$Path, [string]$ChannelOverride)
+
+    $config = Read-ClientConfig $Path
+    $channel = if ($ChannelOverride) {
+        $ChannelOverride
+    } elseif ($config.UpdateChannel) {
+        [string]$config.UpdateChannel
+    } else {
+        'stable'
+    }
+
+    Write-Verbose "Retrieving latest available $channel version."
+    $release = Get-UpdateCandidate -Channel $channel
+
+    # ForceUpgrade intentionally reinstalls the selected channel's current
+    # version, even if its version number is unchanged. It does not modify DNS.
+    Start-SelfUpdate -Release $release
+    Write-Host "Verified $channel update staged; replacement starts after exit."
+}
+
 function Invoke-Client {
     param([string]$Path, [bool]$Force)
     $phase = 'initialize'
@@ -524,7 +547,19 @@ function Invoke-Client {
 }
 # Dot-source is deliberately supported for tests; direct invocation runs the client.
 if ($MyInvocation.InvocationName -ne '.') {
-    try { Invoke-Client -Path $ConfigPath -Force ([bool]$ForceDnsUpdate.IsPresent) }
+    try {
+        if ($UpgradeChannel -and -not $ForceUpgrade) {
+            throw '-UpgradeChannel requires -ForceUpgrade.'
+        }
+        if ($ForceUpgrade -and $ForceDnsUpdate) {
+            throw 'Use -ForceUpgrade or -ForceDnsUpdate, not both.'
+        }
+        if ($ForceUpgrade) {
+            Invoke-ForcedUpgrade -Path $ConfigPath -ChannelOverride $UpgradeChannel
+        } else {
+            Invoke-Client -Path $ConfigPath -Force ([bool]$ForceDnsUpdate.IsPresent)
+        }
+    }
     catch {
         # Invoke-Client already logged the sanitized, phase-specific cause.
         # Preserve that cause on the console instead of hiding it.
