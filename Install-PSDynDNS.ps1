@@ -17,6 +17,7 @@ param(
     [string]$IPv6CheckUrl,
     [Nullable[int]]$IntervalMinutes,
     [Nullable[bool]]$AutoUpdate,
+    [ValidateSet('stable','beta','main')][string]$UpdateChannel,
     [Nullable[int]]$UpdateCheckHours,
     [string]$LocalClientPath
 )
@@ -101,12 +102,14 @@ function Save-Settings {
     foreach ($entry in @('UpdateUrl','IPv4CheckUrl','IPv6CheckUrl')) { Assert-Url ([string]$Cfg.$entry) }
     if ($Cfg.IntervalMinutes -lt 1 -or $Cfg.IntervalMinutes -gt 1440) { throw 'IntervalMinutes must be 1..1440.' }
     if ($Cfg.UpdateCheckHours -lt 1) { throw 'UpdateCheckHours must be positive.' }
+    if (-not $Cfg.PSObject.Properties['UpdateChannel']) { $Cfg | Add-Member -NotePropertyName UpdateChannel -NotePropertyValue 'stable' }
+    if ($Cfg.UpdateChannel -notin @('stable','beta','main')) { throw 'Invalid UpdateChannel.' }
     $Cfg | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
     Set-ProtectedAcl $script:ConfigPath -ClientRead
 }
 function Apply-Settings {
     param($Cfg)
-    foreach ($name in @('Hostname','Username','UpdateUrl','IPv4Enabled','IPv6Enabled','IPv4CheckUrl','IPv6CheckUrl','IntervalMinutes','AutoUpdate','UpdateCheckHours')) {
+    foreach ($name in @('Hostname','Username','UpdateUrl','IPv4Enabled','IPv6Enabled','IPv4CheckUrl','IPv6CheckUrl','IntervalMinutes','AutoUpdate','UpdateCheckHours','UpdateChannel')) {
         $value = Get-Variable -Name $name -ValueOnly
         if ($null -ne $value) { $Cfg.$name = $value }
     }
@@ -177,7 +180,7 @@ switch ($PSCmdlet.ParameterSetName) {
             IPv4Enabled=$true; IPv6Enabled=$false
             IPv4CheckUrl='https://ipv4.nsupdate.info/myip'
             IPv6CheckUrl='https://ipv6.nsupdate.info/myip'
-            IntervalMinutes=10; AutoUpdate=$false; UpdateCheckHours=24
+            IntervalMinutes=10; AutoUpdate=$false; UpdateCheckHours=24; UpdateChannel='stable'
         }
         $cfg = Apply-Settings $cfg
         Install-ClientFile $LocalClientPath
