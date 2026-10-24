@@ -25,9 +25,13 @@ jobs:
   release:
     runs-on: windows-2022
     timeout-minutes: 18
+    # Use modern PowerShell for release orchestration and packaging.
+    # Only the explicit Windows PowerShell 5.1 verification steps use powershell.exe.
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - name: Enforce main and validate version
-        shell: powershell
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
           PRERELEASE: ${{ inputs.prerelease }}
@@ -48,7 +52,6 @@ jobs:
         with:
           persist-credentials: false
       - name: Ensure release tag does not exist
-        shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -101,7 +104,6 @@ jobs:
           $result = Invoke-Pester -Path ./tests -PassThru -Output Detailed
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'Pester suite failed.' }
       - name: Install Pester for PowerShell 7
-        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -ge 5 })) {
@@ -109,7 +111,6 @@ jobs:
           }
           Import-Module Pester -MinimumVersion 5.0
       - name: Run PowerShell 7 compatibility tests
-        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $result = Invoke-Pester -Path ./tests/PSDynDNS.Tests.ps1 -PassThru -Output Detailed
@@ -120,13 +121,11 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & ./tests/Integration.Windows.ps1 -Runtime WindowsPowerShell
       - name: PowerShell 7 integration test
-        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           & ./tests/Integration.Windows.ps1 -Runtime PowerShell7
 
       - name: Stamp release version after integration tests
-        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $path = Join-Path $PWD 'PSDynDNS.ps1'
@@ -140,7 +139,6 @@ jobs:
           $null = [Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$parseErrors)
           if ($parseErrors.Count) { throw 'Version-stamped release script failed PowerShell parsing.' }
       - name: Package standalone files, zip and checksums
-        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path dist -Force | Out-Null
@@ -154,7 +152,6 @@ jobs:
           })
           [IO.File]::WriteAllLines((Join-Path $PWD 'dist/SHA256SUMS.txt'),$lines,(New-Object Text.UTF8Encoding($false)))
       - name: Publish release (create draft first)
-        shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
           PRERELEASE: ${{ inputs.prerelease }}
