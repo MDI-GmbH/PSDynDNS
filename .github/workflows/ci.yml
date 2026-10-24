@@ -77,16 +77,27 @@ jobs:
 
   integration:
     name: integration-windows
-    needs: test
+    needs: [test, pwsh7]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: WindowsPowerShell
+            shell: powershell
+          - runtime: PowerShell7
+            shell: pwsh
+    name: integration-${{ matrix.runtime }}
     runs-on: windows-2022
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - name: Exercise actual bootstrap installer and LOCAL SERVICE scheduled task
-        shell: powershell
+        shell: ${{ matrix.shell }}
+        env:
+          TEST_RUNTIME: ${{ matrix.runtime }}
         run: |
           $ErrorActionPreference = 'Stop'
-          & ./tests/Integration.Windows.ps1
+          & ./tests/Integration.Windows.ps1 -Runtime $env:TEST_RUNTIME
 
   build:
     name: build
