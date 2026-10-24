@@ -101,6 +101,10 @@ function Wait-File {
     foreach ($event in @(Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-TaskScheduler/Operational';StartTime=(Get-Date).AddMinutes(-4)} -MaxEvents 15 -ErrorAction SilentlyContinue)) {
         Write-Host ("TaskScheduler event " + $event.Id + ": " + ($event.Message -replace '[\r\n]+',' '))
     }
+    foreach ($n in @('PSDynDNS-CI-TaskStarted.txt','PSDynDNS-CI-TaskError.txt')) {
+        $p = Join-Path $env:windir ('Temp\' + $n)
+        if (Test-Path -LiteralPath $p) { Write-Host ("Task launch log " + $n + ": " + (Get-Content -LiteralPath $p -Raw)) }
+    }
     $runtime = Join-Path $script:InstallRoot 'runtime'
     foreach ($name in @('service-probe.error.txt','service-probe.start.txt')) {
         $diagnostic = Join-Path $runtime $name
@@ -178,7 +182,16 @@ $result | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $runtim
     $probeFile = Join-Path (Join-Path $script:InstallRoot 'app') 'CI-LocalService-Probe.ps1'
     [IO.File]::WriteAllText($probeFile,$sourceCode,(New-Object Text.UTF8Encoding($false)))
     $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $action = New-ScheduledTaskAction -Execute $powershell -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $probeFile + '"')
+    # An encoded launcher writes a marker outside PSDynDNS before touching app ACLs.
+    # This distinguishes a task that never starts from an ACL failure loading the probe.
+    $bootLog = Join-Path $env:windir 'Temp\PSDynDNS-CI-TaskStarted.txt'
+    $errorLog = Join-Path $env:windir 'Temp\PSDynDNS-CI-TaskError.txt'
+    Remove-Item -LiteralPath $bootLog,$errorLog -Force -ErrorAction SilentlyContinue
+    $cmd = "try { [IO.File]::WriteAllText('$bootLog','started'); & '$probeFile' } catch { [IO.File]::WriteAllText('$errorLog',[string]\$_.Exception.Message); exit 3 }"
+    # Build the command without interpolating the catch's PowerShell automatic variable.
+    $cmd = $cmd.Replace('\$_.Exception.Message','$_.Exception.Message')
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
+    $action = New-ScheduledTaskAction -Execute $powershell -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' + $encoded)
     Set-ScheduledTask -TaskName $script:TaskName -Action $action | Out-Null
     $outFile = Join-Path (Join-Path $script:InstallRoot 'runtime') 'service-probe.json'
     Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
