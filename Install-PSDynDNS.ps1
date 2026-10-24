@@ -148,6 +148,17 @@ function Set-ProtectedAcl {
             [Security.AccessControl.AccessControlType]::Allow
         )
         $acl.AddAccessRule($rule)
+        if ($ClientModify -and $Directory -and $Path -eq $script:App) {
+            # Permit replacement of the protected client file without giving
+            # the task write access to config.json, secret.dpapi or file ACLs.
+            $deleteChild = New-Object Security.AccessControl.FileSystemAccessRule(
+                $sid, [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles,
+                [Security.AccessControl.InheritanceFlags]::None,
+                [Security.AccessControl.PropagationFlags]::None,
+                [Security.AccessControl.AccessControlType]::Allow
+            )
+            $acl.AddAccessRule($deleteChild)
+        }
     }
     Set-Acl -LiteralPath $Path -AclObject $acl
 }

@@ -372,6 +372,14 @@ $ErrorActionPreference = 'Stop'
 try {
     try { (Get-Process -Id $ParentPid -ErrorAction Stop).WaitForExit(60000) | Out-Null } catch {}
     if ((Get-FileHash -LiteralPath $Staged -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Digest) { throw 'Staging changed.' }
+    # Preserve the installed client's restrictive DACL on the staged file
+    # before moving either file. Do not attempt to change its owner.
+    $installedAcl = Get-Acl -LiteralPath $Original
+    $stagedAcl = Get-Acl -LiteralPath $Staged
+    $access = [Security.AccessControl.AccessControlSections]::Access
+    $stagedAcl.SetSecurityDescriptorSddlForm(
+        $installedAcl.GetSecurityDescriptorSddlForm($access), $access)
+    Set-Acl -LiteralPath $Staged -AclObject $stagedAcl
     if (Test-Path -LiteralPath $Backup) { Remove-Item -LiteralPath $Backup -Force }
     Move-Item -LiteralPath $Original -Destination $Backup -ErrorAction Stop
     try { Move-Item -LiteralPath $Staged -Destination $Original -ErrorAction Stop }

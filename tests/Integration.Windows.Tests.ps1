@@ -173,9 +173,20 @@ $fixture = Join-Path $PSScriptRoot 'CI-ACL-Original.ps1'
 $stage = $fixture + '.new'
 $backup = $fixture + '.bak'
 try {
+    # The production staging file is created by LOCAL SERVICE, not admin.
+    [IO.File]::WriteAllText($stage, 'Write-Host "staged"')
+    $oldAcl = Get-Acl -LiteralPath $fixture
+    $newAcl = Get-Acl -LiteralPath $stage
+    $access = [Security.AccessControl.AccessControlSections]::Access
+    $newAcl.SetSecurityDescriptorSddlForm($oldAcl.GetSecurityDescriptorSddlForm($access), $access)
+    Set-Acl -LiteralPath $stage -AclObject $newAcl
     Move-Item -LiteralPath $fixture -Destination $backup -ErrorAction Stop
     Move-Item -LiteralPath $stage -Destination $fixture -ErrorAction Stop
-    $canSwapProtectedClient = $true
+    $finalAcl = Get-Acl -LiteralPath $fixture
+    $canSwapProtectedClient = (
+        $finalAcl.GetSecurityDescriptorSddlForm($access) -eq
+        $oldAcl.GetSecurityDescriptorSddlForm($access)
+    )
 } catch {
     Write-Host ('ACL swap probe rejected: ' + $_.Exception.Message)
 }
@@ -195,7 +206,6 @@ $result | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $runtim
             $stage = $fixture + '.new'
             Copy-Item -LiteralPath (Join-Path $appRoot 'PSDynDNS.ps1') -Destination $fixture -Force
             Set-Acl -LiteralPath $fixture -AclObject (Get-Acl -LiteralPath (Join-Path $appRoot 'PSDynDNS.ps1'))
-            [IO.File]::WriteAllText($stage, 'Write-Host "staged"')
             $probeFile = Join-Path $appRoot 'CI-LocalService-Probe.ps1'
             [IO.File]::WriteAllText($probeFile,$sourceCode,(New-Object Text.UTF8Encoding($false)))
             $powershell = (Get-ScheduledTask -TaskName $script:TaskName).Actions[0].Execute
