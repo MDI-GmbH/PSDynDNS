@@ -58,7 +58,12 @@ jobs:
           $pesterConfig.Output.Verbosity = 'Detailed'
           $pesterConfig.CodeCoverage.Enabled = $true
           $pesterConfig.CodeCoverage.Path = @('./PSDynDNS.ps1','./Install-PSDynDNS.ps1')
+          $pesterConfig.CodeCoverage.OutputFormat = 'JaCoCo'
+          $pesterConfig.CodeCoverage.OutputPath = 'coverage-ps51.xml'
           $result = Invoke-Pester -Configuration $pesterConfig
+          if ($null -eq $result.CodeCoverage -or $result.CodeCoverage.CoveragePercent -lt 75) {
+            throw 'Code coverage below required 75%.'
+          }
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { exit 1 }
   tests-ps7:
     name: tests-ps7
@@ -84,7 +89,12 @@ jobs:
           $pesterConfig.Output.Verbosity = 'Detailed'
           $pesterConfig.CodeCoverage.Enabled = $true
           $pesterConfig.CodeCoverage.Path = @('./PSDynDNS.ps1','./Install-PSDynDNS.ps1')
+          $pesterConfig.CodeCoverage.OutputFormat = 'JaCoCo'
+          $pesterConfig.CodeCoverage.OutputPath = 'coverage-ps51.xml'
           $result = Invoke-Pester -Configuration $pesterConfig
+          if ($null -eq $result.CodeCoverage -or $result.CodeCoverage.CoveragePercent -lt 75) {
+            throw 'Code coverage below required 75%.'
+          }
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 compatibility tests failed.' }
 
   build:
