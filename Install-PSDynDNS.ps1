@@ -19,7 +19,8 @@ param(
     [Nullable[bool]]$AutoUpdate,
     [ValidateSet('stable','beta','main')][string]$UpdateChannel,
     [Nullable[int]]$UpdateCheckHours,
-    [string]$LocalClientPath
+    [string]$LocalClientPath,
+    [SecureString]$CredentialSecret
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -117,7 +118,7 @@ function Apply-Settings {
 }
 function Save-Secret {
     Add-Type -AssemblyName System.Security
-    $secure = Read-Host -Prompt 'DynDNS update secret' -AsSecureString
+    $secure = if ($null -ne $CredentialSecret) { $CredentialSecret } else { Read-Host -Prompt 'DynDNS update secret' -AsSecureString }
     $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
     try {
         $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
