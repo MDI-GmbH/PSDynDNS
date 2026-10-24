@@ -68,19 +68,11 @@ function Set-ProtectedAcl {
     Set-Acl -LiteralPath $Path -AclObject $acl
 }
 function Get-TaskSid {
-    # Prefer Windows' authoritative task account mapping once registration exists.
-    # The deterministic SHA-1 fallback is only used during initial bootstrap.
-    $existing = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
-    if ($existing) {
-        try {
-            $ntAccount = New-Object Security.Principal.NTAccount('NT TASK', $script:TaskName)
-            return $ntAccount.Translate([Security.Principal.SecurityIdentifier]).Value
-        } catch {
-            throw 'Cannot resolve NT TASK account to a real SID; refusing to set potentially incorrect ACLs.'
-        }
-    }
-    # Task SIDs are derived from the uppercased full task path using SHA-1.
-    $taskPath = '\' + $script:TaskName.ToUpperInvariant()
+    # Windows task SIDs (S-1-5-87) are derived from the full task path.
+    # Calculate the SID directly: translating the virtual account name
+    # NT TASK\<name> depends on account-name resolution and OS language.
+    # This ASCII task name has the same invariant uppercase form on all locales.
+    $taskPath = '\\' + $script:TaskName.ToUpperInvariant()
     $sha = [Security.Cryptography.SHA1]::Create()
     try { $hash = $sha.ComputeHash([Text.Encoding]::Unicode.GetBytes($taskPath)) }
     finally { $sha.Dispose() }
