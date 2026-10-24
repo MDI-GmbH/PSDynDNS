@@ -27,12 +27,14 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - name: Parse Windows PowerShell 5.1 scripts
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($file in @('PSDynDNS.ps1','Install-PSDynDNS.ps1')) {
+          foreach ($file in @('PSDynDNS.ps1','Install-PSDynDNS.ps1','tools/Test-WindowsValidation.ps1')) {
             $tokens = $null
             $parseErrors = $null
             $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file), [ref]$tokens, [ref]$parseErrors)
@@ -70,13 +72,13 @@ jobs:
           }
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { exit 1 }
       - name: Preserve PowerShell 5.1 coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: coverage-ps51
           path: coverage-ps51.xml
           if-no-files-found: error
       - name: Upload PowerShell 5.1 coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7.1.1
         with:
           files: ./coverage-ps51.xml
           flags: ps51
@@ -91,7 +93,9 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Pester for PowerShell 7
         shell: pwsh
         run: |
@@ -119,13 +123,13 @@ jobs:
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 compatibility tests failed.' }
 
       - name: Preserve PowerShell 7 coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: coverage-ps7
           path: coverage-ps7.xml
           if-no-files-found: error
       - name: Upload PowerShell 7 coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7.1.1
         with:
           files: ./coverage-ps7.xml
           flags: ps7
@@ -139,7 +143,9 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - name: Dry-run release packaging and tamper test
         shell: pwsh
         run: |
@@ -167,7 +173,9 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - name: Assemble release package
         shell: powershell
         run: |
@@ -175,7 +183,7 @@ jobs:
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           Compress-Archive -Path PSDynDNS.ps1,Install-PSDynDNS.ps1,config.example.json,README.md,LICENSE -DestinationPath dist/PSDynDNS.zip -Force
           Get-FileHash dist/PSDynDNS.zip -Algorithm SHA256 | Format-List | Out-String | Set-Content dist/PSDynDNS.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: PSDynDNS-build
           path: dist/*

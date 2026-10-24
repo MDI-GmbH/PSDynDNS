@@ -146,6 +146,10 @@ C:\ProgramData\PSDynDNS\
 
 The task identity may write to `app` and `runtime`, but should only read `config.json` and `secret.dpapi`. Machine-scope DPAPI is not a substitute for correct NTFS access controls.
 
+### Windows installation validation
+
+Run `tools/Test-WindowsValidation.ps1` as Administrator on a test machine. By default it checks installation, task identity and script syntax without changing DNS or the task. Use `-ProbeLocalService` during a maintenance window to temporarily test the real task token, ACLs and DPAPI; its original task action is restored. `-TestUpdateRollback` runs the isolated Pester test; `-LiveDnsUpdate` explicitly contacts the configured provider and may change DNS.
+
 ## Development and releases
 
 - **Development:** Changes are reviewed via pull requests before merging into `main`.

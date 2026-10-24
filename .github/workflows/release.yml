@@ -48,7 +48,7 @@ jobs:
           }
           "TAG=v$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Ensure release tag does not exist
