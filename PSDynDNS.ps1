@@ -452,46 +452,61 @@ function ConvertFrom-UtcTimestamp {
 }
 function Read-UpdateResult {
     param([string]$StatePath,$State,[string]$LogPath)
-    $runtime = Split-Path -Parent $StatePath
-    $path = Join-Path $runtime 'update-result.json'
+    $path = Join-Path (Split-Path -Parent $StatePath) 'update-result.json'
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
     try {
         $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($record.Result -notin @('success','failed') -or
-            [string]$record.Digest -notmatch '^[a-fA-F0-9]{64}
+        if ($record.Result -notin @('success','failed')) { throw 'Invalid helper result.' }
+        if ($record.Result -eq 'success') {
+            $State.LastSuccessfulUpdateCheckUtc = [datetime]::UtcNow.ToString('o')
+            Save-ClientState $StatePath $State
+            Write-ClientLog $LogPath INFO 'Software update replacement completed.'
+        } else {
+            Write-ClientLog $LogPath WARN 'Software update replacement failed.'
+        }
+    } catch {
+        Write-ClientLog $LogPath WARN 'Invalid update result ignored.'
+    } finally {
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+}
+function Invoke-SoftwareUpdate {
+    param($Config,$State,[string]$StatePath,[string]$LogPath)
+    Read-UpdateResult $StatePath $State $LogPath
+    if (-not $Config.AutoUpdate) { return }
     $now = [datetime]::UtcNow
     if ($State.LastSuccessfulUpdateCheckUtc) {
-        try { if ($now -lt (ConvertFrom-UtcTimestamp $State.LastSuccessfulUpdateCheckUtc).AddHours([int]$Config.UpdateCheckHours)) { return } } catch {}
+        try {
+            if ($now -lt (ConvertFrom-UtcTimestamp $State.LastSuccessfulUpdateCheckUtc).AddHours([int]$Config.UpdateCheckHours)) { return }
+        } catch {}
     }
     if ($State.LastUpdateAttemptUtc) {
-        try { if ($now -lt (ConvertFrom-UtcTimestamp $State.LastUpdateAttemptUtc).AddMinutes(30)) { return } } catch {}
+        try {
+            if ($now -lt (ConvertFrom-UtcTimestamp $State.LastUpdateAttemptUtc).AddMinutes(30)) { return }
+        } catch {}
     }
     $State.LastUpdateAttemptUtc = $now.ToString('o')
     Save-ClientState $StatePath $State
     try {
-        $channel = if ($null -ne $Config.PSObject.Properties['UpdateChannel'] -and $Config.UpdateChannel) { [string]$Config.UpdateChannel } else { 'stable' }
+        $channel = if ($null -ne $Config.PSObject.Properties['UpdateChannel'] -and $Config.UpdateChannel) {
+            [string]$Config.UpdateChannel
+        } else { 'stable' }
         if ($channel -notin @('stable','beta','main')) { throw 'Invalid UpdateChannel.' }
         $release = Get-UpdateCandidate $channel
         $needsUpdate = if ($channel -eq 'main') {
             (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $release.Sha256
-        } else {
-            Test-CandidateNewer $release
-        }
+        } else { Test-CandidateNewer $release }
         if (-not $needsUpdate) {
             $State.LastSuccessfulUpdateCheckUtc = [datetime]::UtcNow.ToString('o')
             Save-ClientState $StatePath $State
             return
         }
-        # Staging only starts a separate swap process; it is not confirmation
-        # of installation. Leave the successful-check timestamp unchanged so
-        # a failed download or swap can be retried after 30 minutes.
         Start-SelfUpdate $release
         Write-ClientLog $LogPath INFO 'Verified software update staged; pending process exit.'
     } catch {
         Write-ClientLog $LogPath WARN ('Software update check failed; retry possible after 30 minutes. ' + (Format-ClientFailure -ErrorRecord $_))
     }
 }
-
 function Invoke-ForcedUpgrade {
     param([string]$Path, [string]$ChannelOverride)
 
