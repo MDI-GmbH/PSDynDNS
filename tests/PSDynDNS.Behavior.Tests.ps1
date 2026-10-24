@@ -193,29 +193,29 @@ Describe 'Shared semantic release selection' {
 Describe 'Windows DNS fallback after preferred resolvers fail' {
     It 'uses preferred Google resolvers when they answer and never queries system DNS' {
         Mock Resolve-DnsName {
-            if (-not $PSBoundParameters.ContainsKey('Server')) { throw 'Unexpected system DNS lookup' }
+            if (-not (-not [string]::IsNullOrEmpty([string]$Server))) { throw 'Unexpected system DNS lookup' }
             [pscustomobject]@{ Type='A'; IPAddress='203.0.113.10' }
         }
         $comparison = Get-DnsComparison -Hostname 'client.example.org' -Servers @('8.8.8.8','8.8.4.4') -IPv4 '203.0.113.10' -IPv4Enabled $true -IPv6Enabled $false
         $comparison.Matches | Should -BeTrue
         $comparison.ResolverSource | Should -Be 'configured'
-        Should -Invoke Resolve-DnsName -Times 2 -Exactly -ParameterFilter { $PSBoundParameters.ContainsKey('Server') }
-        Should -Invoke Resolve-DnsName -Times 0 -Exactly -ParameterFilter { -not $PSBoundParameters.ContainsKey('Server') }
+        Should -Invoke Resolve-DnsName -Times 2 -Exactly -ParameterFilter { (-not [string]::IsNullOrEmpty([string]$Server)) }
+        Should -Invoke Resolve-DnsName -Times 0 -Exactly -ParameterFilter { -not (-not [string]::IsNullOrEmpty([string]$Server)) }
     }
     It 'falls back to Windows DNS when an explicit preferred resolver times out' {
         Mock Resolve-DnsName {
-            if ($PSBoundParameters.ContainsKey('Server')) { throw 'Simulated blocked external DNS' }
+            if ((-not [string]::IsNullOrEmpty([string]$Server))) { throw 'Simulated blocked external DNS' }
             [pscustomobject]@{ Type='A'; IPAddress='203.0.113.10' }
         }
         $comparison = Get-DnsComparison -Hostname 'client.example.org' -Servers @('8.8.8.8','8.8.4.4') -IPv4 '203.0.113.10' -IPv4Enabled $true -IPv6Enabled $false
         $comparison.Matches | Should -BeTrue
         $comparison.ResolverSource | Should -Be 'system'
-        Should -Invoke Resolve-DnsName -Times 1 -Exactly -ParameterFilter { $PSBoundParameters.ContainsKey('Server') }
-        Should -Invoke Resolve-DnsName -Times 1 -Exactly -ParameterFilter { -not $PSBoundParameters.ContainsKey('Server') }
+        Should -Invoke Resolve-DnsName -Times 1 -Exactly -ParameterFilter { (-not [string]::IsNullOrEmpty([string]$Server)) }
+        Should -Invoke Resolve-DnsName -Times 1 -Exactly -ParameterFilter { -not (-not [string]::IsNullOrEmpty([string]$Server)) }
     }
     It 'rechecks both A and AAAA through Windows DNS after an IPv6 preferred lookup fails' {
         Mock Resolve-DnsName {
-            if ($PSBoundParameters.ContainsKey('Server') -and $Type -eq 'AAAA') { throw 'Simulated blocked AAAA lookup' }
+            if ((-not [string]::IsNullOrEmpty([string]$Server)) -and $Type -eq 'AAAA') { throw 'Simulated blocked AAAA lookup' }
             if ($Type -eq 'A') {
                 [pscustomobject]@{ Type='A'; IPAddress='203.0.113.10' }
             } else {
@@ -225,12 +225,12 @@ Describe 'Windows DNS fallback after preferred resolvers fail' {
         $comparison = Get-DnsComparison -Hostname 'client.example.org' -Servers @('8.8.8.8') -IPv4 '203.0.113.10' -IPv6 '2001:db8::10' -IPv4Enabled $true -IPv6Enabled $true
         $comparison.Matches | Should -BeTrue
         $comparison.ResolverSource | Should -Be 'system'
-        Should -Invoke Resolve-DnsName -Times 2 -Exactly -ParameterFilter { $PSBoundParameters.ContainsKey('Server') }
-        Should -Invoke Resolve-DnsName -Times 2 -Exactly -ParameterFilter { -not $PSBoundParameters.ContainsKey('Server') }
+        Should -Invoke Resolve-DnsName -Times 2 -Exactly -ParameterFilter { (-not [string]::IsNullOrEmpty([string]$Server)) }
+        Should -Invoke Resolve-DnsName -Times 2 -Exactly -ParameterFilter { -not (-not [string]::IsNullOrEmpty([string]$Server)) }
     }
     It 'does not fall back on conflicting answers from preferred resolvers' {
         Mock Resolve-DnsName {
-            if (-not $PSBoundParameters.ContainsKey('Server')) { throw 'System DNS must not be reached' }
+            if (-not (-not [string]::IsNullOrEmpty([string]$Server))) { throw 'System DNS must not be reached' }
             if ($Server -eq '8.8.8.8') {
                 [pscustomobject]@{ Type='A'; IPAddress='203.0.113.10' }
             } else {
@@ -238,11 +238,11 @@ Describe 'Windows DNS fallback after preferred resolvers fail' {
             }
         }
         { Get-DnsComparison -Hostname 'client.example.org' -Servers @('8.8.8.8','8.8.4.4') -IPv4 '203.0.113.10' -IPv4Enabled $true -IPv6Enabled $false } | Should -Throw '*disagree*'
-        Should -Invoke Resolve-DnsName -Times 0 -Exactly -ParameterFilter { -not $PSBoundParameters.ContainsKey('Server') }
+        Should -Invoke Resolve-DnsName -Times 0 -Exactly -ParameterFilter { -not (-not [string]::IsNullOrEmpty([string]$Server)) }
     }
     It 'does not fall back when preferred DNS explicitly reports no record' {
         Mock Resolve-DnsName {
-            if (-not $PSBoundParameters.ContainsKey('Server')) { throw 'System DNS must not be reached' }
+            if (-not (-not [string]::IsNullOrEmpty([string]$Server))) { throw 'System DNS must not be reached' }
             $errorRecord = [System.Management.Automation.ErrorRecord]::new(
                 [System.Exception]::new('No record'),
                 'DNS_INFO_NO_RECORDS',
@@ -254,12 +254,12 @@ Describe 'Windows DNS fallback after preferred resolvers fail' {
         $comparison = Get-DnsComparison -Hostname 'client.example.org' -Servers @('8.8.8.8') -IPv4 '203.0.113.10' -IPv4Enabled $true -IPv6Enabled $false
         $comparison.Matches | Should -BeFalse
         $comparison.ResolverSource | Should -Be 'configured'
-        Should -Invoke Resolve-DnsName -Times 0 -Exactly -ParameterFilter { -not $PSBoundParameters.ContainsKey('Server') }
+        Should -Invoke Resolve-DnsName -Times 0 -Exactly -ParameterFilter { -not (-not [string]::IsNullOrEmpty([string]$Server)) }
     }
     It 'fails closed when external and Windows system DNS cannot answer' {
         Mock Resolve-DnsName { throw 'Simulated DNS timeout' }
         { Get-DnsComparison -Hostname 'client.example.org' -Servers @('8.8.8.8') -IPv4 '203.0.113.10' -IPv4Enabled $true -IPv6Enabled $false } | Should -Throw '*Windows system DNS*'
-        Should -Invoke Resolve-DnsName -Times 1 -Exactly -ParameterFilter { -not $PSBoundParameters.ContainsKey('Server') }
+        Should -Invoke Resolve-DnsName -Times 1 -Exactly -ParameterFilter { -not (-not [string]::IsNullOrEmpty([string]$Server)) }
     }
 }
 Describe 'DNS as source of truth' {
