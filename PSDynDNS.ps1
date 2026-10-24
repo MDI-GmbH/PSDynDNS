@@ -313,8 +313,8 @@ function Get-UpdateCandidate {
             $raw = New-Object byte[] ($prefix.Length + $bytes.Length)
             [Array]::Copy($prefix, 0, $raw, 0, $prefix.Length)
             [Array]::Copy($bytes, 0, $raw, $prefix.Length, $bytes.Length)
-            $gitHash = ([BitConverter]::ToString($sha1.ComputeHash($raw))).
-                Replace('-', '').ToLowerInvariant()
+            $gitHash = [BitConverter]::ToString($sha1.ComputeHash($raw))
+            $gitHash = $gitHash.Replace('-', '').ToLowerInvariant()
         } finally {
             $sha1.Dispose()
         }
