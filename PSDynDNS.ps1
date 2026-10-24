@@ -100,8 +100,12 @@ function Get-ResponseCategory {
 
 function Read-ClientState {
     param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) { return [pscustomobject]@{} }
-    try { return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json }
+    if (-not (Test-Path -LiteralPath $Path)) { return [pscustomobject]@{ LastIPv4=$null; LastIPv6=$null; Fingerprint=$null; BlockedReason=$null; RetryAfterUtc=$null } }
+    try { $state = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($property in @('LastIPv4','LastIPv6','Fingerprint','BlockedReason','RetryAfterUtc')) {
+            if (-not ($state.PSObject.Properties.Name -contains $property)) { $state | Add-Member -NotePropertyName $property -NotePropertyValue $null }
+        }
+        return $state }
     catch { throw 'State file is corrupted; manual recovery is required.' }
 }
 
@@ -109,7 +113,11 @@ function Save-ClientState {
     param([string]$Path, $State)
     $temporary = $Path + '.tmp'
     $State | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $temporary -Encoding UTF8
-    Move-Item -LiteralPath $temporary -Destination $Path -Force
+    if (Test-Path -LiteralPath $Path) {
+        [IO.File]::Replace($temporary, $Path, $null)
+    } else {
+        [IO.File]::Move($temporary, $Path)
+    }
 }
 
 function Write-ClientLog {
