@@ -153,38 +153,34 @@ function Get-PublishedDnsAddresses {
     if (-not $Servers -or $Servers.Count -eq 0) { $Servers = @('8.8.8.8','8.8.4.4') }
     $observations = @()
     foreach ($server in $Servers) {
+        $records = @()
         try {
-            # Resolve-DnsName is shipped with supported Windows versions.
-            # Query explicitly configured recursive resolvers, never the hosts file.
-            $records = @(Resolve-DnsName -Name $Hostname -Type $RecordType -Server $server -DnsOnly -ErrorAction Stop)
-            $values = @($records | Where-Object { [string]$_.Type -eq $RecordType -and $_.IPAddress } |
-                ForEach-Object { ([Net.IPAddress]::Parse([string]$_.IPAddress)).ToString() } | Sort-Object -Unique)
-            $observations += [pscustomobject]@{ Server=$server; Addresses=$values }
+            $records = @(Resolve-DnsName -Name $Hostname -Type $RecordType -Server $server -DnsOnly -NoHostsFile -ErrorAction Stop)
         } catch {
-            # Unreachable DNS or a negative answer is not sufficient to force
-            # an update; fail closed instead of spamming the provider.
-            throw ("DNS lookup for $RecordType via $server failed: " + $_.Exception.Message)
+            $errorId = [string]$_.FullyQualifiedErrorId
+            if ($errorId -notmatch 'DNS_ERROR_RCODE_NAME_ERROR|DNS_INFO_NO_RECORDS|DNS_ERROR_RCODE_NXRRSET') {
+                throw ("DNS lookup for $RecordType via $server failed: " + $_.Exception.Message)
+            }
         }
+        $values = @($records | Where-Object { [string]$_.Type -eq $RecordType -and $_.IPAddress } |
+            ForEach-Object { ([Net.IPAddress]::Parse([string]$_.IPAddress)).ToString() } | Sort-Object -Unique)
+        $observations += [pscustomobject]@{Server=$server;Addresses=$values}
     }
     $first = (@($observations[0].Addresses) -join ',')
     foreach ($observation in $observations) {
-        if ((@($observation.Addresses) -join ',') -ne $first) {
-            throw "DNS resolvers disagree about $RecordType records; retry after cache TTL."
-        }
+        if ((@($observation.Addresses) -join ',') -ne $first) { throw "DNS resolvers disagree about $RecordType records; retry after cache TTL." }
     }
     return @($observations[0].Addresses)
 }
-function Test-DnsMatchesPublicAddress {
+function Get-DnsComparison {
     param([string]$Hostname,[string[]]$Servers,[string]$IPv4,[string]$IPv6,[bool]$IPv4Enabled,[bool]$IPv6Enabled)
-    if ($IPv4Enabled) {
-        $v4 = @(Get-PublishedDnsAddresses -Hostname $Hostname -RecordType A -Servers $Servers)
-        if ($v4.Count -ne 1 -or $v4[0] -ne $IPv4) { return $false }
-    }
-    if ($IPv6Enabled) {
-        $v6 = @(Get-PublishedDnsAddresses -Hostname $Hostname -RecordType AAAA -Servers $Servers)
-        if ($v6.Count -ne 1 -or $v6[0] -ne $IPv6) { return $false }
-    }
-    return $true
+    $v4 = @(); $v6 = @()
+    if ($IPv4Enabled) { $v4 = @(Get-PublishedDnsAddresses -Hostname $Hostname -RecordType A -Servers $Servers) }
+    if ($IPv6Enabled) { $v6 = @(Get-PublishedDnsAddresses -Hostname $Hostname -RecordType AAAA -Servers $Servers) }
+    $matches = (-not $IPv4Enabled -or ($v4.Count -eq 1 -and $v4[0] -eq $IPv4)) -and
+               (-not $IPv6Enabled -or ($v6.Count -eq 1 -and $v6[0] -eq $IPv6))
+    $observation = ('A=' + ($v4 -join ',') + ';AAAA=' + ($v6 -join ','))
+    return [pscustomobject]@{ Matches=[bool]$matches; Observation=$observation }
 }
 
 function Invoke-DynDnsRequest {
@@ -217,7 +213,7 @@ function Get-ResponseCategory {
 
 function Read-ClientState {
     param([string]$Path)
-    $fields = @('LastIPv4','LastIPv6','Fingerprint','BlockedReason','RetryAfterUtc','LastUpdateCheckUtc','LastUpdateAttemptUtc')
+    $fields = @('LastIPv4','LastIPv6','Fingerprint','BlockedReason','RetryAfterUtc','LastUpdateCheckUtc','LastUpdateAttemptUtc','LastSuccessfulUpdateCheckUtc','LastProviderUpdateUtc','LastDnsObservation')
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         $empty = [pscustomobject]@{}
         foreach ($field in $fields) { Add-Member -InputObject $empty -NotePropertyName $field -NotePropertyValue $null }
@@ -379,8 +375,8 @@ function Invoke-SoftwareUpdate {
     param($Config,$State,[string]$StatePath,[string]$LogPath)
     if (-not $Config.AutoUpdate) { return }
     $now = [datetime]::UtcNow
-    if ($State.LastUpdateCheckUtc) {
-        try { if ($now -lt (ConvertFrom-UtcTimestamp $State.LastUpdateCheckUtc).AddHours([int]$Config.UpdateCheckHours)) { return } } catch {}
+    if ($State.LastSuccessfulUpdateCheckUtc) {
+        try { if ($now -lt (ConvertFrom-UtcTimestamp $State.LastSuccessfulUpdateCheckUtc).AddHours([int]$Config.UpdateCheckHours)) { return } } catch {}
     }
     if ($State.LastUpdateAttemptUtc) {
         try { if ($now -lt (ConvertFrom-UtcTimestamp $State.LastUpdateAttemptUtc).AddMinutes(30)) { return } } catch {}
@@ -391,7 +387,7 @@ function Invoke-SoftwareUpdate {
         $channel = if ($null -ne $Config.PSObject.Properties['UpdateChannel'] -and $Config.UpdateChannel) { [string]$Config.UpdateChannel } else { 'stable' }
         if ($channel -notin @('stable','beta','main')) { throw 'Invalid UpdateChannel.' }
         $release = Get-UpdateCandidate $channel
-        $State.LastUpdateCheckUtc = [datetime]::UtcNow.ToString('o')
+        $State.LastSuccessfulUpdateCheckUtc = [datetime]::UtcNow.ToString('o')
         Save-ClientState $StatePath $State
         if ($channel -eq 'main') {
             if ((Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant() -eq $release.Sha256) { return }
@@ -441,13 +437,29 @@ function Invoke-Client {
             $ipv6 = Get-PublicAddress ([string]$config.IPv6CheckUrl) ([Net.Sockets.AddressFamily]::InterNetworkV6)
         }
         $phase = 'compare public IP with DNS records'
-    $servers = if ($null -ne $config.PSObject.Properties['DnsServers']) { [string[]]$config.DnsServers } else { @('8.8.8.8','8.8.4.4') }
-    if (-not $Force -and (Test-DnsMatchesPublicAddress -Hostname $config.Hostname -Servers $servers -IPv4 $ipv4 -IPv6 $ipv6 -IPv4Enabled $config.IPv4Enabled -IPv6Enabled $config.IPv6Enabled)) {
-        Write-Verbose 'DNS records already match public IP; provider request skipped.'
-        Invoke-SoftwareUpdate $config $state $statePath $logPath
-        return
-    }
-    Write-Verbose 'DNS differs from public IP; DynDNS provider request required.'
+        $servers = if ($null -ne $config.PSObject.Properties['DnsServers']) { [string[]]$config.DnsServers } else { @('8.8.8.8','8.8.4.4') }
+        $dnsResult = $null
+        if (-not $Force) {
+            $dnsResult = Get-DnsComparison -Hostname $config.Hostname -Servers $servers -IPv4 $ipv4 -IPv6 $ipv6 -IPv4Enabled $config.IPv4Enabled -IPv6Enabled $config.IPv6Enabled
+            if ($dnsResult.Matches) {
+                Write-Verbose 'DNS records already match public IP; provider request skipped.'
+                Write-ClientLog $logPath INFO 'DNS A/AAAA records match public IP; provider request skipped.'
+                Invoke-SoftwareUpdate $config $state $statePath $logPath
+                return
+            }
+            if ($state.LastProviderUpdateUtc -and $state.LastDnsObservation -eq $dnsResult.Observation -and
+                $state.LastIPv4 -eq $ipv4 -and $state.LastIPv6 -eq $ipv6) {
+                try {
+                    if ($now -lt (ConvertFrom-UtcTimestamp $state.LastProviderUpdateUtc).AddMinutes(30)) {
+                        Write-Verbose 'Resolver still reports the pre-update record; waiting for DNS cache expiry.'
+                        Write-ClientLog $logPath INFO 'DNS cache still contains prior answer; provider retry postponed.'
+                        Invoke-SoftwareUpdate $config $state $statePath $logPath
+                        return
+                    }
+                } catch {}
+            }
+        }
+        Write-Verbose 'DNS differs from public IP (or update forced); DynDNS provider request required.'
         $phase = 'read DPAPI credential'
         Write-Verbose 'Decrypting machine-protected DynDNS credential.'
         $secret = Read-MachineSecret (Join-Path $root 'secret.dpapi')
@@ -458,7 +470,6 @@ function Invoke-Client {
         $code = ($response -split '\s+')[0]
         $category = Get-ResponseCategory $response
     Write-Verbose ('DynDNS provider response: ' + $code)
-    Write-Verbose ('DynDNS provider response: ' + $code)
         $newState = [ordered]@{
             Fingerprint = $fingerprint
             LastIPv4 = $state.LastIPv4
@@ -466,11 +477,17 @@ function Invoke-Client {
             BlockedReason = $null
             RetryAfterUtc = $null
             LastUpdateCheckUtc = $state.LastUpdateCheckUtc
+            LastUpdateAttemptUtc = $state.LastUpdateAttemptUtc
+            LastSuccessfulUpdateCheckUtc = $state.LastSuccessfulUpdateCheckUtc
+            LastProviderUpdateUtc = $state.LastProviderUpdateUtc
+            LastDnsObservation = $state.LastDnsObservation
         }
         switch ($category) {
             success {
                 $newState.LastIPv4 = $ipv4
                 $newState.LastIPv6 = $ipv6
+                $newState.LastProviderUpdateUtc = $now.ToString('o')
+                if ($dnsResult) { $newState.LastDnsObservation = $dnsResult.Observation }
                 Write-ClientLog $logPath INFO "DynDNS update succeeded: $code"
             }
             blocked {
