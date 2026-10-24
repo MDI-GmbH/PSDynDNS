@@ -6,7 +6,7 @@
 ![Windows PowerShell 5.1](https://img.shields.io/badge/Windows%20PowerShell-5.1-5391FE)
 ![PowerShell 7 tests](https://img.shields.io/badge/PowerShell%207-compatibility%20tests-5391FE)
 
-**Lightweight DynDNS2 client for Windows PowerShell 5.1.** Updates IPv4 and IPv6 DNS records when your public IP changes, using a Windows Scheduled Task and no external runtime modules.
+**Lightweight DynDNS2 client for Windows PowerShell 5.1 and PowerShell 7.** Updates IPv4 and IPv6 DNS records when your public IP changes, using a Windows Scheduled Task and no external runtime modules.
 
 > [!WARNING]
 > **Development preview.** The code on `dev` is not approved for production. Windows integration tests and updater rollback validation are required before a stable release. Keep automatic updates disabled until then.
@@ -26,7 +26,7 @@
 | Requirement | Details |
 | --- | --- |
 | Windows | Windows 10/11 or Windows Server 2016+ (full compatibility testing pending) |
-| PowerShell | **Windows PowerShell 5.1** |
+| PowerShell | **Windows PowerShell 5.1 or PowerShell 7** |
 | Administrator | Only for installation, configuration, repair and removal |
 | Network | HTTPS to the DynDNS provider and IP-discovery endpoints |
 | Extra modules | None for the runtime client |
@@ -36,7 +36,7 @@
 > [!IMPORTANT]
 > The repository is private. GitHub downloads require authentication until publication. Use the following source-based installation **only on an isolated test machine**.
 
-Clone the repository and open **Windows PowerShell 5.1 as Administrator**.
+Clone the repository and open **Windows PowerShell 5.1 or PowerShell 7 as Administrator**.
 
 ~~~powershell
 .\Install-PSDynDNS.ps1 -Install -Hostname host.example.org -LocalClientPath .\PSDynDNS.ps1
@@ -66,7 +66,7 @@ The installer asks for the DynDNS secret interactively. The scheduler interval i
 | `.\Install-PSDynDNS.ps1 -Uninstall` | Remove executable and task, retain configuration |
 | `.\Install-PSDynDNS.ps1 -Uninstall -Purge` | Remove installation including configuration and secret |
 
-The scheduled task runs the client automatically. For troubleshooting, the client accepts `-ConfigPath` and `-ForceDnsUpdate`; never run the task-writable installed script with administrator privileges.
+The scheduled task runs the client automatically. Use `-Runtime PowerShell7` during installation (or configuration) to select PowerShell 7 instead of the default Windows PowerShell 5.1. For troubleshooting, the client accepts `-ConfigPath` and `-ForceDnsUpdate`; never run the task-writable installed script with administrator privileges.
 
 ## Update channels
 
@@ -86,7 +86,7 @@ The updater validates downloads and verifies PowerShell syntax before staging a 
 
 ## Command-line parameters
 
-Run the bootstrap installer from an **elevated Windows PowerShell 5.1** console. Existing installations are automatically reconfigured when setting arguments are supplied: `-Configure` is optional.
+Run the bootstrap installer from an **elevated Windows PowerShell 5.1 or PowerShell 7** console. Existing installations are automatically reconfigured when setting arguments are supplied: `-Configure` is optional.
 
 | Parameter | Usage |
 | --- | --- |
@@ -96,6 +96,7 @@ Run the bootstrap installer from an **elevated Windows PowerShell 5.1** console.
 | `-UpdateUrl` | DynDNS2 HTTPS endpoint. |
 | `-IPv4Enabled`, `-IPv6Enabled` | Enable or disable individual IP families using `$true` or `$false`. |
 | `-IPv4CheckUrl`, `-IPv6CheckUrl` | HTTPS address discovery endpoints. |
+| `-Runtime` | `WindowsPowerShell` (default) or `PowerShell7` as task engine; `-Repair` retains selection. |
 | `-IntervalMinutes` | Scheduled Task frequency, default 10 minutes. **Not stored in `config.json`**. |
 | `-AutoUpdate` | Enable or disable automatic software checks. |
 | `-UpdateChannel` | `stable`, `beta`, or `main`. |
@@ -109,32 +110,25 @@ Run the bootstrap installer from an **elevated Windows PowerShell 5.1** console.
 
 The installed client itself accepts only `-ConfigPath` and `-ForceDnsUpdate`. Administrative configuration happens through the bootstrap installer.
 
-### Run installer directly from a GitHub Release
+### Install directly from a release
 
-Once the repository is public, use this **download-and-verify** approach. It downloads the installer to a temporary local file and validates its SHA-256 digest from GitHub's release metadata before executing it. Avoid piping downloaded code to `Invoke-Expression`.
+After the repository becomes public, open an **elevated** PowerShell terminal. These compact commands download the bootstrap installer locally and execute it; they do not pipe code to `Invoke-Expression`.
+
+**Latest stable release:**
 
 ~~~powershell
-# Stable: use 'stable'; preview: use 'beta'
-$channel = 'stable'
-$repo = 'MDI-GmbH/PSDynDNS'
-$headers = @{ 'User-Agent' = 'PSDynDNS-Bootstrap' }
-if ($channel -eq 'stable') {
-    $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers $headers
-} else {
-    $release = @(Invoke-RestMethod "https://api.github.com/repos/$repo/releases?per_page=100" -Headers $headers) |
-        Where-Object { $_.prerelease -and -not $_.draft } | Sort-Object published_at -Descending | Select-Object -First 1
-}
-if (-not $release) { throw 'No suitable published release found.' }
-$asset = @($release.assets | Where-Object name -eq 'Install-PSDynDNS.ps1') | Select-Object -First 1
-if (-not $asset -or $asset.digest -notmatch '^sha256:([a-fA-F0-9]{64})$') { throw 'Missing installer SHA-256 digest.' }
-$expected = $Matches[1]
-$installer = Join-Path $env:TEMP 'Install-PSDynDNS.ps1'
-Invoke-WebRequest $asset.browser_download_url -OutFile $installer -UseBasicParsing
-if ((Get-FileHash $installer -Algorithm SHA256).Hash -ne $expected) { throw 'Download integrity check failed.' }
-& $installer -Install -Hostname 'host.example.org'
+$u='https://github.com/MDI-GmbH/PSDynDNS/releases/latest/download/Install-PSDynDNS.ps1'; $p=Join-Path $env:TEMP 'Install-PSDynDNS.ps1'; Invoke-WebRequest $u -OutFile $p; & $p -Install -Hostname 'host.example.org'
 ~~~
 
-Set `$channel = 'beta'` to get the most recently **published pre-release**. For a productive installation, first inspect the downloaded script and its release notes. The example runs only on systems where you have already explicitly chosen to trust this repository.
+**Latest published pre-release:**
+
+~~~powershell
+$r=Invoke-RestMethod 'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases?per_page=100'; $a=($r|Where-Object prerelease|Select-Object -First 1).assets|Where-Object name -eq 'Install-PSDynDNS.ps1'|Select-Object -First 1; if(-not $a){throw 'No beta installer available'}; $p=Join-Path $env:TEMP 'Install-PSDynDNS.ps1'; Invoke-WebRequest $a.browser_download_url -OutFile $p; & $p -Install -Hostname 'host.example.org' -UpdateChannel beta
+~~~
+
+> [!CAUTION]
+> These abbreviated examples are intended for users who trust this project's release artifacts. They **do not independently verify the download checksum**. For stricter deployments, check the published SHA-256 from the GitHub API or release checksums and inspect the file before running it. Private repositories require authenticated access. For a Beta install, ensure the matching client asset is also selected by the installer rather than silently installing stable.
+
 
 ## Installation layout
 
@@ -154,7 +148,7 @@ The task identity may write to `app` and `runtime`, but should only read `config
 ## Development and releases
 
 - **Development:** `dev` branch; merge into `main` via reviewed pull requests.
-- **CI:** [PowerShell CI](.github/workflows/ci.yml) runs syntax checks and Pester under Windows PowerShell 5.1, compatibility tests under PowerShell 7, and real Windows installation integration tests. New PR commits cancel older in-progress CI runs for the same PR.
+- **CI:** [PowerShell CI](.github/workflows/ci.yml) runs Pester in parallel under Windows PowerShell 5.1 and PowerShell 7; only after both succeed do isolated Windows installation integration tests run **for both runtimes**. New PR commits cancel older in-progress CI runs for the same PR.
 - **Build:** Successful tests on `main` produce a ZIP and checksums.
 - **Publishing:** Manually start [Publish Release](.github/workflows/release.yml) on `main`, specify e.g. `0.2.0` (stable) or `0.3.0-beta.1` (pre-release). The release workflow runs tests and prepares assets and automatically generated notes before publication.
 
