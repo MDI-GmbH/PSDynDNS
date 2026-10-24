@@ -242,3 +242,116 @@ Describe 'Additional mock-based network paths' {
         $result.Matches | Should -BeFalse
     }
 }
+
+Describe 'GitHub update trust and API failure paths' {
+    BeforeEach {
+        $script:gitBlobContent = [Text.Encoding]::UTF8.GetBytes("Write-Output 'test'")
+        $sha1 = [Security.Cryptography.SHA1]::Create()
+        try {
+            $prefix = [Text.Encoding]::ASCII.GetBytes('blob ' + $script:gitBlobContent.Length + [char]0)
+            $raw = New-Object byte[] ($prefix.Length + $script:gitBlobContent.Length)
+            [Array]::Copy($prefix,0,$raw,0,$prefix.Length)
+            [Array]::Copy($script:gitBlobContent,0,$raw,$prefix.Length,$script:gitBlobContent.Length)
+            $script:gitBlobSha = ([BitConverter]::ToString($sha1.ComputeHash($raw))).Replace('-','').ToLowerInvariant()
+        } finally { $sha1.Dispose() }
+        $script:commitSha = 'a' * 40
+    }
+    It 'rejects a forged GitHub main commit identifier' {
+        Mock Invoke-RestMethod { [pscustomobject]@{sha='not-a-commit'} }
+        { Get-UpdateCandidate main } | Should -Throw '*commit SHA*'
+    }
+    It 'rejects a GitHub source blob with unsupported encoding' {
+        Mock Invoke-RestMethod {
+            if ($Uri -match '/commits/main$') { return [pscustomobject]@{sha=$script:commitSha} }
+            return [pscustomobject]@{sha=$script:gitBlobSha;encoding='utf-8';content='hello'}
+        }
+        { Get-UpdateCandidate main } | Should -Throw '*source blob*'
+    }
+    It 'rejects a GitHub source blob with a manipulated content hash' {
+        Mock Invoke-RestMethod {
+            if ($Uri -match '/commits/main$') { return [pscustomobject]@{sha=$script:commitSha} }
+            return [pscustomobject]@{
+                sha=('f' * 40);encoding='base64'
+                content=[Convert]::ToBase64String($script:gitBlobContent)
+            }
+        }
+        { Get-UpdateCandidate main } | Should -Throw '*digest mismatch*'
+    }
+    It 'calculates Git blob and SHA256 hashes for a valid main response' {
+        Mock Invoke-RestMethod {
+            if ($Uri -match '/commits/main$') { return [pscustomobject]@{sha=$script:commitSha} }
+            return [pscustomobject]@{
+                sha=$script:gitBlobSha;encoding='base64'
+                content=[Convert]::ToBase64String($script:gitBlobContent)
+            }
+        }
+        $candidate = Get-UpdateCandidate main
+        $candidate.Channel | Should -Be 'main'
+        $candidate.Commit | Should -Be $script:commitSha
+        $candidate.Sha256 | Should -Be (
+            (Get-FileHash -InputStream ([IO.MemoryStream]::new($script:gitBlobContent)) -Algorithm SHA256).Hash.ToLowerInvariant()
+        )
+    }
+    It 'rejects published releases lacking verifiable assets' {
+        $release = [pscustomobject]@{
+            tag_name='v2.0.0';draft=$false;prerelease=$false
+            assets=@([pscustomobject]@{
+                name='PSDynDNS.ps1';digest='sha256:invalid'
+                browser_download_url='https://github.com/MDI-GmbH/PSDynDNS/releases/download/v2.0.0/PSDynDNS.ps1'
+            })
+        }
+        { Select-PSDynDnsRelease @($release) stable } | Should -Throw '*No usable*'
+    }
+    It 'rejects release assets served from a different host' {
+        $release = [pscustomobject]@{
+            tag_name='v2.0.0';draft=$false;prerelease=$false
+            assets=@([pscustomobject]@{
+                name='PSDynDNS.ps1';digest=('sha256:' + ('a' * 64))
+                browser_download_url='https://evil.example/releases/download/PSDynDNS.ps1'
+            })
+        }
+        { Select-PSDynDnsRelease @($release) stable } | Should -Throw '*No usable*'
+    }
+    It 'uses the release API instead of network calls for a fabricated stable response' {
+        Mock Invoke-RestMethod { throw 'simulated GitHub outage' }
+        { Get-UpdateCandidate stable } | Should -Throw '*GitHub outage*'
+    }
+}
+Describe 'Config, DPAPI and local state fault handling' {
+    It 'rejects a missing client configuration' {
+        { Read-ClientConfig (Join-Path $TestDrive 'missing.json') } | Should -Throw '*not found*'
+    }
+    It 'rejects invalid updater interval and channel' {
+        $cfg = [pscustomobject]@{
+            Hostname='host.example.org'; UpdateUrl='https://example.org/update'
+            IPv4Enabled=$true; IPv6Enabled=$false
+            IPv4CheckUrl='https://example.org/myip'
+            UpdateCheckHours=0; UpdateChannel='stable'
+        }
+        { Assert-PSDynDnsSettings $cfg } | Should -Throw '*UpdateCheckHours*'
+        $cfg.UpdateCheckHours=24
+        $cfg.UpdateChannel='preview'
+        { Assert-PSDynDnsSettings $cfg } | Should -Throw '*UpdateChannel*'
+    }
+    It 'rejects an empty DNS resolver list' {
+        $cfg = [pscustomobject]@{
+            Hostname='host.example.org'; UpdateUrl='https://example.org/update'
+            IPv4Enabled=$true; IPv6Enabled=$false
+            IPv4CheckUrl='https://example.org/myip';DnsServers=@()
+        }
+        { Assert-PSDynDnsSettings $cfg } | Should -Throw '*DnsServers*'
+    }
+    It 'fails closed if the encrypted DPAPI key is absent' {
+        { Read-MachineSecret (Join-Path $TestDrive 'missing.dpapi') } | Should -Throw '*missing*'
+    }
+    It 'fails closed if encrypted DPAPI ciphertext is corrupt' {
+        $secretFile = Join-Path $TestDrive 'corrupt.dpapi'
+        [IO.File]::WriteAllBytes($secretFile,[byte[]](4,9,1,5,4))
+        { Read-MachineSecret $secretFile } | Should -Throw
+    }
+    It 'rejects non-object JSON as runtime state' {
+        $stateFile = Join-Path $TestDrive 'scalar.json'
+        '["not","a","state"]' | Set-Content -LiteralPath $stateFile
+        { Read-ClientState $stateFile } | Should -Throw '*JSON object*'
+    }
+}
