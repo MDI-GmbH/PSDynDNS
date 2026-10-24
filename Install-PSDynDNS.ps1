@@ -16,6 +16,7 @@ param(
     [string]$IPv4CheckUrl,
     [string]$IPv6CheckUrl,
     [Nullable[int]]$IntervalMinutes,
+    [ValidateSet('WindowsPowerShell','PowerShell7')][string]$Runtime,
     [Nullable[bool]]$AutoUpdate,
     [ValidateSet('stable','beta','main')][string]$UpdateChannel,
     [Nullable[int]]$UpdateCheckHours,
@@ -148,15 +149,29 @@ function Save-Secret {
     Set-ProtectedAcl (Join-Path $script:Root 'secret.dpapi') -ClientRead
 }
 function Install-Task {
-    param([int]$Minutes)
+    param([int]$Minutes, [ValidateSet('WindowsPowerShell','PowerShell7')][string]$Runtime='WindowsPowerShell')
     if ($Minutes -lt 1 -or $Minutes -gt 1440) { throw 'IntervalMinutes must be between 1 and 1440.' }
     $path = Join-Path $script:App 'PSDynDNS.ps1'
     $args = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $path + '" -ConfigPath "' + $script:ConfigPath + '"'
-    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument $args
+    $exe = if ($Runtime -eq 'PowerShell7') {
+        $command = Get-Command 'pwsh.exe' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $command) { throw 'PowerShell 7 (pwsh.exe) was requested but is not installed.' }
+        $command.Source
+    } else {
+        Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    }
+    $action = New-ScheduledTaskAction -Execute $exe -Argument $args
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $Minutes)
     $principal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\LOCAL SERVICE' -LogonType ServiceAccount -RunLevel Limited -ProcessTokenSidType Unrestricted
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -StartWhenAvailable
     Register-ScheduledTask -TaskName $script:TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+}
+function Get-ExistingTaskRuntime {
+    $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
+    if (-not $task) { return 'WindowsPowerShell' }
+    $execute = [string]$task.Actions[0].Execute
+    if ([IO.Path]::GetFileName($execute) -ieq 'pwsh.exe') { return 'PowerShell7' }
+    return 'WindowsPowerShell'
 }
 function Get-ExistingTaskInterval {
     # The Scheduled Task is the only authoritative source for the interval.
@@ -201,7 +216,7 @@ function Install-ClientFile {
     Set-ProtectedAcl $destination -ClientRead
 }
 Assert-Admin
-if (-not $PSVersionTable.PSVersion -or $PSVersionTable.PSVersion.Major -ne 5) { throw 'Windows PowerShell 5.1 is required.' }
+if (-not $PSVersionTable.PSVersion -or $PSVersionTable.PSVersion -lt [version]'5.1') { throw 'PowerShell 5.1 or 7+ is required.' }
 $script:TaskPrincipalSid = Get-TaskSid
 switch ($PSCmdlet.ParameterSetName) {
     Install {
@@ -220,7 +235,8 @@ switch ($PSCmdlet.ParameterSetName) {
         Save-Settings $cfg
         Save-Secret
         $minutes = if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes')) { [int]$IntervalMinutes } else { 10 }
-        Install-Task $minutes
+        $runtime = if ($Runtime) { $Runtime } else { 'WindowsPowerShell' }
+        Install-Task -Minutes $minutes -Runtime $runtime
         # Reapply permissions using Windows' registered NT TASK SID, not just the pre-registration hash.
         Ensure-Directories
         Set-ProtectedAcl (Join-Path $script:App 'PSDynDNS.ps1') -ClientRead
@@ -229,17 +245,22 @@ switch ($PSCmdlet.ParameterSetName) {
         Write-Host 'PSDynDNS installed.'
     }
     Configure {
-        $settings = @('Hostname','Username','UpdateUrl','IPv4Enabled','IPv6Enabled','IPv4CheckUrl','IPv6CheckUrl','AutoUpdate','UpdateCheckHours','UpdateChannel','IntervalMinutes')
+        $settings = @('Hostname','Username','UpdateUrl','IPv4Enabled','IPv6Enabled','IPv4CheckUrl','IPv6CheckUrl','AutoUpdate','UpdateCheckHours','UpdateChannel','IntervalMinutes','Runtime')
         if (@($settings | Where-Object { $script:InstallerBoundParameters.ContainsKey($_) }).Count -eq 0) {
             throw 'No settings supplied. Pass the settings to change or use -Help.'
         }
         $cfg = Apply-Settings (Read-Settings)
         Save-Settings $cfg
-        if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes')) { Install-Task ([int]$IntervalMinutes) }
+        if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes') -or $script:InstallerBoundParameters.ContainsKey('Runtime')) {
+            $minutes = if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes')) { [int]$IntervalMinutes } else { Get-ExistingTaskInterval }
+            $runtime = if ($Runtime) { $Runtime } else { Get-ExistingTaskRuntime }
+            Install-Task -Minutes $minutes -Runtime $runtime
+        }
         Write-Host 'Configuration saved.'
     }
     Repair {
         $minutes = if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes')) { [int]$IntervalMinutes } else { Get-ExistingTaskInterval }
+        $runtime = if ($Runtime) { $Runtime } else { Get-ExistingTaskRuntime }
         Ensure-Directories
         foreach ($name in @('config.json','secret.dpapi')) {
             $p = Join-Path $script:Root $name
@@ -249,7 +270,7 @@ switch ($PSCmdlet.ParameterSetName) {
         $client = Join-Path $script:App 'PSDynDNS.ps1'
         if (-not (Test-Path -LiteralPath $client)) { Install-ClientFile $LocalClientPath }
         else { Set-ProtectedAcl $client -ClientRead }
-        Install-Task $minutes
+        Install-Task -Minutes $minutes -Runtime $runtime
         Ensure-Directories
         Set-ProtectedAcl $client -ClientRead
         Set-ProtectedAcl $script:ConfigPath -ClientRead
