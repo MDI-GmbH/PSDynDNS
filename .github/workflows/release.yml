@@ -15,14 +15,24 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: psdyndns-release
   cancel-in-progress: false
 
 jobs:
+  tests:
+    name: Re-run complete CI before publishing
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      id-token: write
+
   release:
+    needs: tests
+    permissions:
+      contents: write
     runs-on: windows-2022
     timeout-minutes: 18
     # Use modern PowerShell for release orchestration and packaging.
@@ -75,60 +85,6 @@ jobs:
             if ($status -ne 404) { throw }
           }
           if ($exists) { throw "Tag $env:TAG already exists." }
-      - name: Check PowerShell 5.1 syntax
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          foreach ($file in @('PSDynDNS.ps1', 'Install-PSDynDNS.ps1')) {
-            $tokens = $null
-            $errors = $null
-            $null = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file), [ref]$tokens, [ref]$errors)
-            if ($errors.Count) {
-              foreach ($e in $errors) { Write-Host ("$file {0}:{1} {2}" -f $e.Extent.StartLineNumber,$e.Extent.StartColumnNumber,$e.Message) }
-              throw "PowerShell parser failed: $file"
-            }
-          }
-      - name: Install Pester
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
-          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-          Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Force -Scope CurrentUser -SkipPublisherCheck -Confirm:$false
-          Import-Module Pester -MinimumVersion 5.0 -ErrorAction Stop
-      - name: Run Pester tests
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $pesterConfig = New-PesterConfiguration
-          $pesterConfig.Run.Path = @('./tests/PSDynDNS.Tests.ps1','./tests/PSDynDNS.Behavior.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1','./tests/Integration.Windows.Tests.ps1')
-          $pesterConfig.Run.PassThru = $true
-          $pesterConfig.Output.Verbosity = 'Detailed'
-          $pesterConfig.CodeCoverage.Enabled = $true
-          $pesterConfig.CodeCoverage.Path = @('./PSDynDNS.ps1','./Install-PSDynDNS.ps1')
-          $result = Invoke-Pester -Configuration $pesterConfig
-          if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'Pester suite failed.' }
-          if ($null -eq $result.CodeCoverage -or $result.CodeCoverage.CoveragePercent -lt 75) { throw 'Windows PowerShell 5.1 coverage below 75%.' }
-      - name: Install Pester for PowerShell 7
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -ge 5 })) {
-            Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Scope CurrentUser -Force -Confirm:$false
-          }
-          Import-Module Pester -MinimumVersion 5.0
-      - name: Run PowerShell 7 compatibility tests
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $pesterConfig = New-PesterConfiguration
-          $pesterConfig.Run.Path = @('./tests/PSDynDNS.Tests.ps1','./tests/PSDynDNS.Behavior.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1','./tests/Integration.Windows.Tests.ps1')
-          $pesterConfig.Run.PassThru = $true
-          $pesterConfig.Output.Verbosity = 'Detailed'
-          $pesterConfig.CodeCoverage.Enabled = $true
-          $pesterConfig.CodeCoverage.Path = @('./PSDynDNS.ps1','./Install-PSDynDNS.ps1')
-          $result = Invoke-Pester -Configuration $pesterConfig
-          if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 tests failed.' }
-          if ($null -eq $result.CodeCoverage -or $result.CodeCoverage.CoveragePercent -lt 75) { throw 'PowerShell 7 coverage below 75%.' }
       - name: Package and verify release assets
         run: |
           $ErrorActionPreference = 'Stop'
