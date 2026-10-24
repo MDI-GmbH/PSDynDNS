@@ -1,0 +1,11 @@
+# Local secrets, state, and generated files
+config.json
+secret.dpapi
+state.json
+*.log
+*.bak
+*.new
+*.tmp
+*.zip
+*.sha256
+.DS_Store
