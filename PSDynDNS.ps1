@@ -147,18 +147,55 @@ function Test-PublicIp {
 }
 
 
-function Get-LatestRelease {
-    $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases/latest' -TimeoutSec 25 -Headers @{'User-Agent'=$script:UserAgent}
-    if ($release.draft -or $release.prerelease -or [string]$release.tag_name -notmatch '^v?([0-9]+)[.]([0-9]+)[.]([0-9]+)$') { throw 'Invalid stable release.' }
-    $version = [version](([string]$release.tag_name) -replace '^v','')
-    $assets = @($release.assets | Where-Object { $_.name -eq 'PSDynDNS.ps1' })
-    if ($assets.Count -ne 1) { throw 'Expected exactly one script release asset.' }
-    $asset = $assets[0]
-    if ([string]$asset.digest -notmatch '^sha256:([a-fA-F0-9]{64})$') { throw 'Release SHA256 missing.' }
-    $checksum = $Matches[1].ToLowerInvariant()
-    $uri = [uri]$asset.browser_download_url
-    if ($uri.Scheme -ne 'https' -or $uri.Host -ne 'github.com' -or -not $uri.AbsolutePath.StartsWith('/MDI-GmbH/PSDynDNS/releases/download/',[StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected release asset origin.' }
-    return [pscustomobject]@{Version=$version;Url=$uri.AbsoluteUri;Checksum=$checksum}
+function Get-UpdateCandidate {
+    param([ValidateSet('stable','beta','main')][string]$Channel)
+    $headers = @{'User-Agent'=$script:UserAgent; Accept='application/vnd.github+json'}
+    if ($Channel -eq 'main') {
+        $commit = Invoke-RestMethod -Uri 'https://api.github.com/repos/MDI-GmbH/PSDynDNS/commits/main' -TimeoutSec 25 -Headers $headers
+        if ([string]$commit.sha -notmatch '^[a-fA-F0-9]{40}$') { throw 'Invalid main commit SHA.' }
+        $file = Invoke-RestMethod -Uri ('https://api.github.com/repos/MDI-GmbH/PSDynDNS/contents/PSDynDNS.ps1?ref=' + $commit.sha) -TimeoutSec 25 -Headers $headers
+        if ([string]$file.sha -notmatch '^[a-fA-F0-9]{40}$' -or $file.encoding -ne 'base64') { throw 'Invalid main source blob.' }
+        $bytes = [Convert]::FromBase64String(([string]$file.content -replace '\s',''))
+        $sha1 = [Security.Cryptography.SHA1]::Create()
+        try { $prefix = [Text.Encoding]::ASCII.GetBytes(('blob ' + $bytes.Length + [char]0)); $raw = New-Object byte[] ($prefix.Length + $bytes.Length); [Array]::Copy($prefix,0,$raw,0,$prefix.Length); [Array]::Copy($bytes,0,$raw,$prefix.Length,$bytes.Length); $gitHash = ([BitConverter]::ToString($sha1.ComputeHash($raw))).Replace('-','').ToLowerInvariant() } finally { $sha1.Dispose() }
+        if ($gitHash -ne ([string]$file.sha).ToLowerInvariant()) { throw 'Git source blob digest mismatch.' }
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try { $digest = ([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-','').ToLowerInvariant() } finally { $sha256.Dispose() }
+        return [pscustomobject]@{Version=$null;Sha256=$digest;Content=$bytes;Commit=[string]$commit.sha;Channel='main'}
+    }
+    $url = if ($Channel -eq 'stable') { 'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases/latest' } else { 'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases?per_page=100' }
+    $releases = @(Invoke-RestMethod -Uri $url -TimeoutSec 25 -Headers $headers)
+    $candidates = @()
+    foreach ($release in $releases) {
+        if ($release.draft -or ($Channel -eq 'stable' -and $release.prerelease)) { continue }
+        $tag = [string]$release.tag_name
+        if ($tag -notmatch '^v?(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)\.(\d+))?$') { continue }
+        $core = [version]($Matches[1] + '.' + $Matches[2] + '.' + $Matches[3])
+        $kind = if ($Matches[4]) { [string]$Matches[4] } else { '' }
+        $number = if ($Matches[5]) { [int]$Matches[5] } else { 0 }
+        $rank = switch ($kind) { 'alpha' {1} 'beta' {2} 'rc' {3} default {4} }
+        if (($kind -ne '') -ne [bool]$release.prerelease) { continue }
+        $assets = @($release.assets | Where-Object { $_.name -eq 'PSDynDNS.ps1' })
+        if ($assets.Count -ne 1 -or [string]$assets[0].digest -notmatch '^sha256:([a-fA-F0-9]{64})$') { continue }
+        $digest = $Matches[1].ToLowerInvariant()
+        $u = [uri]$assets[0].browser_download_url
+        if ($u.Scheme -ne 'https' -or $u.Host -ne 'github.com' -or -not $u.AbsolutePath.StartsWith('/MDI-GmbH/PSDynDNS/releases/download/',[StringComparison]::OrdinalIgnoreCase)) { continue }
+        $candidates += [pscustomobject]@{ Version=$core;Rank=$rank;PreNumber=$number;Tag=$tag;Url=$u.AbsoluteUri;Sha256=$digest;Content=$null;Commit=$null;Channel=$Channel }
+    }
+    if ($candidates.Count -eq 0) { throw 'No usable published release.' }
+    return $candidates | Sort-Object -Property @{Expression='Version';Descending=$true},@{Expression='Rank';Descending=$true},@{Expression='PreNumber';Descending=$true} | Select-Object -First 1
+}
+function Test-CandidateNewer {
+    param($Candidate)
+    if ($Candidate.Channel -eq 'main') { return $true }
+    if ($script:Version -notmatch '^(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)\.(\d+))?') { throw 'Invalid current script version.' }
+    $currentCore = [version]($Matches[1] + '.' + $Matches[2] + '.' + $Matches[3])
+    $currentKind = if ($Matches[4]) { [string]$Matches[4] } else { '' }
+    $currentNumber = if ($Matches[5]) { [int]$Matches[5] } else { 0 }
+    $currentRank = switch ($currentKind) { 'alpha' {1} 'beta' {2} 'rc' {3} default {4} }
+    if ($Candidate.Version -gt $currentCore) { return $true }
+    if ($Candidate.Version -lt $currentCore) { return $false }
+    return ($Candidate.Rank -gt $currentRank -or ($Candidate.Rank -eq $currentRank -and $Candidate.PreNumber -gt $currentNumber))
 }
 function Start-SelfUpdate {
     param($Release)
@@ -167,8 +204,9 @@ function Start-SelfUpdate {
     $newFile = $target + '.new'
     $backup = $target + '.bak'
     try {
-        Invoke-WebRequest -Uri $Release.Url -OutFile $newFile -UseBasicParsing -TimeoutSec 60 -MaximumRedirection 0
-        if ((Get-FileHash -LiteralPath $newFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Release.Checksum) { throw 'Update digest mismatch.' }
+        if ($Release.Channel -eq 'main') { [IO.File]::WriteAllBytes($newFile,$Release.Content) }
+        else { Invoke-WebRequest -Uri $Release.Url -OutFile $newFile -UseBasicParsing -TimeoutSec 60 -MaximumRedirection 0 }
+        if ((Get-FileHash -LiteralPath $newFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Release.Sha256) { throw 'Update digest mismatch.' }
         $tokens = $null
         $errors = $null
         $null = [Management.Automation.Language.Parser]::ParseFile($newFile,[ref]$tokens,[ref]$errors)
@@ -206,8 +244,12 @@ function Invoke-SoftwareUpdate {
     $State.LastUpdateCheckUtc = $now.ToString('o')
     Save-ClientState $StatePath $State
     try {
-        $release = Get-LatestRelease
-        if ($release.Version -le [version]$script:Version) { return }
+        $channel = if ($Config.PSObject.Properties['UpdateChannel'] -and $Config.UpdateChannel) { [string]$Config.UpdateChannel } else { 'stable' }
+        if ($channel -notin @('stable','beta','main')) { throw 'Invalid UpdateChannel.' }
+        $release = Get-UpdateCandidate $channel
+        if ($channel -eq 'main') {
+            if ((Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant() -eq $release.Sha256) { return }
+        } elseif (-not (Test-CandidateNewer $release)) { return }
         Start-SelfUpdate $release
         Write-ClientLog $LogPath INFO 'Verified software update staged; pending process exit.'
     } catch {
