@@ -217,8 +217,22 @@ function Save-Settings {
     Assert-PSDynDnsSettings $Cfg
     # Keep scheduled task repetition interval outside of config.json.
     if ($null -ne $Cfg.PSObject.Properties['IntervalMinutes']) { $Cfg.PSObject.Properties.Remove('IntervalMinutes') }
-    $Cfg | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
-    Set-ProtectedAcl $script:ConfigPath -ClientRead
+    $temp = $script:ConfigPath + '.new'
+    try {
+        # Restrict the temporary file before writing user configuration.
+        [IO.File]::WriteAllBytes($temp, [byte[]]@())
+        Set-ProtectedAcl $temp -ClientRead
+        $json = $Cfg | ConvertTo-Json -Depth 5
+        [IO.File]::WriteAllText($temp, $json, (New-Object Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $script:ConfigPath) {
+            [IO.File]::Replace($temp, $script:ConfigPath, ($script:ConfigPath + '.bak'))
+        } else {
+            [IO.File]::Move($temp, $script:ConfigPath)
+        }
+        Set-ProtectedAcl $script:ConfigPath -ClientRead
+    } finally {
+        Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Apply-Settings {
@@ -251,7 +265,21 @@ function Save-Secret {
         $bytes = [Text.Encoding]::UTF8.GetBytes($plain)
         try {
             $cipher = [Security.Cryptography.ProtectedData]::Protect($bytes,$null,[Security.Cryptography.DataProtectionScope]::LocalMachine)
-            [IO.File]::WriteAllBytes((Join-Path $script:Root 'secret.dpapi'),$cipher)
+            $secretPath = Join-Path $script:Root 'secret.dpapi'
+            $temp = $secretPath + '.new'
+            try {
+                [IO.File]::WriteAllBytes($temp, [byte[]]@())
+                Set-ProtectedAcl $temp -ClientRead
+                [IO.File]::WriteAllBytes($temp, $cipher)
+                if (Test-Path -LiteralPath $secretPath) {
+                    [IO.File]::Replace($temp, $secretPath, ($secretPath + '.bak'))
+                } else {
+                    [IO.File]::Move($temp, $secretPath)
+                }
+                Set-ProtectedAcl $secretPath -ClientRead
+            } finally {
+                Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+            }
         } finally { [Array]::Clear($bytes,0,$bytes.Length); $plain = $null }
     } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
     Set-ProtectedAcl (Join-Path $script:Root 'secret.dpapi') -ClientRead

@@ -151,7 +151,7 @@ function Move-Item {
     if ($firstTry -lt 0) { throw 'Cannot locate helper fault injection point.' }
     $injectedHelper = $actualHelper.Insert($firstTry,($injection + [Environment]::NewLine))
     [IO.File]::WriteAllText($helper,$injectedHelper,$utf8)
-    $rollbackOutput = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $helper -ParentPid 0 -Original $original -Staged $stage -Backup $backup -Digest $stageHash 2>&1
+    $rollbackOutput = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $helper -ParentPid 0 -Original $original -Staged $stage -Backup $backup -Digest $stageHash -Result (Join-Path $dir 'update-result.json') 2>&1
     $exit = $LASTEXITCODE
     if ($rollbackOutput) { $rollbackOutput | ForEach-Object { Write-Host ('Rollback process: ' + [string]$_) } }
     Assert-Ci ($exit -ne 0) 'Injected second move forces helper failure'
