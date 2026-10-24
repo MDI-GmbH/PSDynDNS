@@ -13,6 +13,7 @@ permissions:
 jobs:
   validate:
     runs-on: windows-2022
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - name: Parse Windows PowerShell 5.1 scripts
@@ -34,7 +35,11 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Force -Scope CurrentUser -SkipPublisherCheck
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Force -Scope CurrentUser -SkipPublisherCheck -Confirm:$false
+          Import-Module Pester -MinimumVersion 5.0 -ErrorAction Stop
       - name: Run Pester tests (Windows PowerShell 5.1)
         shell: powershell
         run: |
