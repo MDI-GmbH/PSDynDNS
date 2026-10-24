@@ -238,7 +238,11 @@ try {
     $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop
     Assert-Equal ([IO.Path]::GetFileName([string]$task.Actions[0].Execute)) $(if ($Runtime -eq 'PowerShell7') { 'pwsh.exe' } else { 'powershell.exe' }) 'Task uses requested PowerShell runtime'
     Assert-Equal ([string]$task.Principal.ProcessTokenSidType) 'Unrestricted' 'Scheduled task has an unrestricted task SID'
-    Assert-True (([string]$task.Principal.UserId -match 'LOCAL.?SERVICE|LOCALSERVICE|S-1-5-19')) 'Scheduled task runs as LOCAL SERVICE'
+    $principalName = [string]$task.Principal.UserId
+    $principalSid = if ($principalName -eq 'S-1-5-19') { $principalName } else {
+        (New-Object Security.Principal.NTAccount($principalName)).Translate([Security.Principal.SecurityIdentifier]).Value
+    }
+    Assert-Equal $principalSid 'S-1-5-19' 'Scheduled task uses language-neutral LOCAL SERVICE SID'
 
     $script:CiSecret = 'ci-test-second-secret-only'
     Invoke-Installer -Arguments @('-SetKey')
