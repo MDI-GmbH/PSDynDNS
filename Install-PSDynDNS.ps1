@@ -126,13 +126,26 @@ function Set-ProtectedAcl {
     foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
     $inherit = if ($Directory) { [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' } else { [Security.AccessControl.InheritanceFlags]::None }
     foreach ($sid in @($script:SystemSid,$script:AdministratorsSid)) {
-        $rule = New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($sid)),[Security.AccessControl.FileSystemRights]::FullControl,$inherit,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)
+        $identity = New-Object Security.Principal.SecurityIdentifier($sid)
+        $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+            $identity,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            $inherit,
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
         $acl.AddAccessRule($rule)
     }
     if ($ClientRead -or $ClientModify) {
         $sid = New-Object Security.Principal.SecurityIdentifier($script:TaskPrincipalSid)
         $rights = if ($ClientModify) { [Security.AccessControl.FileSystemRights]::Modify } else { [Security.AccessControl.FileSystemRights]::ReadAndExecute }
-        $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid,$rights,$inherit,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)
+        $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+            $sid,
+            $rights,
+            $inherit,
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
         $acl.AddAccessRule($rule)
     }
     Set-Acl -LiteralPath $Path -AclObject $acl
@@ -188,7 +201,11 @@ function Save-Settings {
 
 function Apply-Settings {
     param($Cfg)
-    foreach ($name in @('Hostname','Username','UpdateUrl','IPv4Enabled','IPv6Enabled','IPv4CheckUrl','IPv6CheckUrl','AutoUpdate','UpdateCheckHours','UpdateChannel','DnsServers')) {
+    foreach ($name in @(
+        'Hostname', 'Username', 'UpdateUrl', 'IPv4Enabled', 'IPv6Enabled',
+        'IPv4CheckUrl', 'IPv6CheckUrl', 'AutoUpdate', 'UpdateCheckHours',
+        'UpdateChannel', 'DnsServers'
+    )) {
         # Use only explicitly supplied script arguments. An unspecified typed
         # [string] parameter can otherwise appear as an empty string and
         # erase defaults such as the DynDNS HTTPS endpoint.
@@ -312,7 +329,11 @@ switch ($PSCmdlet.ParameterSetName) {
         Write-Host 'PSDynDNS installed.'
     }
     Configure {
-        $settings = @('Hostname','Username','UpdateUrl','IPv4Enabled','IPv6Enabled','IPv4CheckUrl','IPv6CheckUrl','AutoUpdate','UpdateCheckHours','UpdateChannel','DnsServers','IntervalMinutes','Runtime')
+        $settings = @(
+            'Hostname', 'Username', 'UpdateUrl', 'IPv4Enabled', 'IPv6Enabled',
+            'IPv4CheckUrl', 'IPv6CheckUrl', 'AutoUpdate', 'UpdateCheckHours',
+            'UpdateChannel', 'DnsServers', 'IntervalMinutes', 'Runtime'
+        )
         if (@($settings | Where-Object { $script:InstallerBoundParameters.ContainsKey($_) }).Count -eq 0) {
             throw 'No settings supplied. Pass the settings to change or use -Help.'
         }
