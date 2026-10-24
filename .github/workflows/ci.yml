@@ -52,7 +52,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $result = Invoke-Pester -Path ./tests -PassThru -Output Detailed
+          $result = Invoke-Pester -Path ./tests -CodeCoverage ./PSDynDNS.ps1,./Install-PSDynDNS.ps1 -PassThru -Output Detailed
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { exit 1 }
   tests-ps7:
     name: tests-ps7
@@ -72,7 +72,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $result = Invoke-Pester -Path ./tests -PassThru -Output Detailed
+          $result = Invoke-Pester -Path ./tests -CodeCoverage ./PSDynDNS.ps1,./Install-PSDynDNS.ps1 -PassThru -Output Detailed
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 compatibility tests failed.' }
 
   integration-ps51:
