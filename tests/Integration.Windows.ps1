@@ -67,6 +67,9 @@ function Invoke-Installer {
             $params[$name] = $value
         }
     }
+    if ($params.ContainsKey('Install') -or $params.ContainsKey('SetKey')) {
+        $params['CredentialSecret'] = ConvertTo-SecureString -String $script:CiSecret -AsPlainText -Force
+    }
     & $script:Installer @params
 }
 
