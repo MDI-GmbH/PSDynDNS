@@ -153,6 +153,49 @@ Describe 'Provider errors and software-update retries' {
         Should -Invoke Get-DnsComparison -Times 0
         Should -Invoke Invoke-DynDnsRequest -Times 1 -Exactly
     }
+    It 'retries a failed download after 30 minutes instead of a full update interval' {
+        $state = Read-ClientState $script:testState
+        $cfg = [pscustomobject]@{AutoUpdate=$true;UpdateCheckHours=24;UpdateChannel='stable'}
+        Mock Get-UpdateCandidate {
+            [pscustomobject]@{Channel='stable';Version=[version]'99.0.0';Rank=4;PreNumber=0}
+        }
+        Mock Start-SelfUpdate { throw 'simulated download failure' }
+        $logPath = Join-Path (Split-Path $script:testState) 'client.log'
+
+        Invoke-SoftwareUpdate $cfg $state $script:testState $logPath
+        $saved = Read-ClientState $script:testState
+        $saved.LastUpdateAttemptUtc | Should -Not -BeNullOrEmpty
+        $saved.LastSuccessfulUpdateCheckUtc | Should -BeNullOrEmpty
+        Invoke-SoftwareUpdate $cfg $saved $script:testState $logPath
+        Should -Invoke Start-SelfUpdate -Times 1 -Exactly
+
+        $saved.LastUpdateAttemptUtc = [datetime]::UtcNow.AddMinutes(-31).ToString('o')
+        Save-ClientState $script:testState $saved
+        Invoke-SoftwareUpdate $cfg $saved $script:testState $logPath
+        Should -Invoke Start-SelfUpdate -Times 2 -Exactly
+    }
+    It 'does not count staging an update as an installed version' {
+        $state = Read-ClientState $script:testState
+        $cfg = [pscustomobject]@{AutoUpdate=$true;UpdateCheckHours=24;UpdateChannel='stable'}
+        Mock Get-UpdateCandidate {
+            [pscustomobject]@{Channel='stable';Version=[version]'99.0.0';Rank=4;PreNumber=0}
+        }
+        Mock Start-SelfUpdate {}
+        Invoke-SoftwareUpdate $cfg $state $script:testState (Join-Path (Split-Path $script:testState) 'client.log')
+        (Read-ClientState $script:testState).LastSuccessfulUpdateCheckUtc | Should -BeNullOrEmpty
+        Should -Invoke Start-SelfUpdate -Times 1 -Exactly
+    }
+    It 'records the normal interval after checking and finding no newer release' {
+        $state = Read-ClientState $script:testState
+        $cfg = [pscustomobject]@{AutoUpdate=$true;UpdateCheckHours=24;UpdateChannel='stable'}
+        Mock Get-UpdateCandidate {
+            [pscustomobject]@{Channel='stable';Version=[version]'0.0.1';Rank=4;PreNumber=0}
+        }
+        Mock Start-SelfUpdate { throw 'no update should be launched' }
+        Invoke-SoftwareUpdate $cfg $state $script:testState (Join-Path (Split-Path $script:testState) 'client.log')
+        (Read-ClientState $script:testState).LastSuccessfulUpdateCheckUtc | Should -Not -BeNullOrEmpty
+        Should -Invoke Start-SelfUpdate -Times 0 -Exactly
+    }
     It 'records attempted but not successful GitHub check on transient failure' {
         $state = Read-ClientState $script:testState
         $cfg = [pscustomobject]@{AutoUpdate=$true;UpdateCheckHours=24;UpdateChannel='stable'}

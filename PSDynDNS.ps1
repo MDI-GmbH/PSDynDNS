@@ -427,11 +427,19 @@ function Invoke-SoftwareUpdate {
         $channel = if ($null -ne $Config.PSObject.Properties['UpdateChannel'] -and $Config.UpdateChannel) { [string]$Config.UpdateChannel } else { 'stable' }
         if ($channel -notin @('stable','beta','main')) { throw 'Invalid UpdateChannel.' }
         $release = Get-UpdateCandidate $channel
-        $State.LastSuccessfulUpdateCheckUtc = [datetime]::UtcNow.ToString('o')
-        Save-ClientState $StatePath $State
-        if ($channel -eq 'main') {
-            if ((Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant() -eq $release.Sha256) { return }
-        } elseif (-not (Test-CandidateNewer $release)) { return }
+        $needsUpdate = if ($channel -eq 'main') {
+            (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $release.Sha256
+        } else {
+            Test-CandidateNewer $release
+        }
+        if (-not $needsUpdate) {
+            $State.LastSuccessfulUpdateCheckUtc = [datetime]::UtcNow.ToString('o')
+            Save-ClientState $StatePath $State
+            return
+        }
+        # Staging only starts a separate swap process; it is not confirmation
+        # of installation. Leave the successful-check timestamp unchanged so
+        # a failed download or swap can be retried after 30 minutes.
         Start-SelfUpdate $release
         Write-ClientLog $LogPath INFO 'Verified software update staged; pending process exit.'
     } catch {
