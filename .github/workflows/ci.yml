@@ -18,8 +18,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
-    name: test
+  tests-ps51:
+    name: tests-ps51
     runs-on: windows-2022
     timeout-minutes: 12
     steps:
@@ -54,8 +54,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $result = Invoke-Pester -Path ./tests -PassThru -Output Detailed
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { exit 1 }
-  pwsh7:
-    name: powershell-7
+  tests-ps7:
+    name: tests-ps7
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
@@ -77,7 +77,7 @@ jobs:
 
   integration-ps51:
     name: integration-ps51
-    needs: [test, pwsh7]
+    needs: [tests-ps51, tests-ps7]
     runs-on: windows-2022
     timeout-minutes: 12
     steps:
@@ -90,7 +90,7 @@ jobs:
 
   integration-ps7:
     name: integration-ps7
-    needs: [test, pwsh7]
+    needs: [tests-ps51, tests-ps7]
     runs-on: windows-2022
     timeout-minutes: 12
     steps:
@@ -103,7 +103,7 @@ jobs:
 
   build:
     name: build
-    needs: [test, pwsh7, integration-ps51, integration-ps7]
+    needs: [tests-ps51, tests-ps7, integration-ps51, integration-ps7]
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: windows-2022
     timeout-minutes: 5
