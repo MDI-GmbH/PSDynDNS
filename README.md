@@ -1,7 +1,6 @@
 # PSDynDNS
 
 [![CI](https://github.com/MDI-GmbH/PSDynDNS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MDI-GmbH/PSDynDNS/actions/workflows/ci.yml)
-[![Coverage (dev)](https://codecov.io/gh/MDI-GmbH/PSDynDNS/branch/dev/graph/badge.svg)](https://codecov.io/gh/MDI-GmbH/PSDynDNS/tree/dev)
 [![Coverage (dev)](https://codecov.io/gh/MDI-GmbH/PSDynDNS/branch/dev/graph/badge.svg)](https://app.codecov.io/gh/MDI-GmbH/PSDynDNS/tree/dev)
 [![Release](https://img.shields.io/github/v/release/MDI-GmbH/PSDynDNS?include_prereleases&label=release)](https://github.com/MDI-GmbH/PSDynDNS/releases)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
