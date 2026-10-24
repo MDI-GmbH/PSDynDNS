@@ -124,57 +124,57 @@ Describe 'PSDynDNS installation, task isolation and lifecycle' -Tag 'Integration
             # We must keep the task identity/SID to test permissions correctly.
             # -Repair restores the original action afterwards.
             $sourceCode = @'
-        $ErrorActionPreference = 'Stop'
-        try {
-            [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'runtime\service-probe.start.txt'),'started')
-            . (Join-Path $PSScriptRoot 'PSDynDNS.ps1')
-        } catch {
-            try {
-                [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'runtime\service-probe.error.txt'), [string]$_.Exception.Message)
-            } catch {}
-            throw
-        }
-        $root = Split-Path -Parent $PSScriptRoot
-        $cfg = Read-ClientConfig (Join-Path $root 'config.json')
-        $key = Read-MachineSecret (Join-Path $root 'secret.dpapi')
-        $runtime = Join-Path $root 'runtime'
-        $canRead = ($cfg.Hostname -eq 'ci-changed.example.invalid' -and $key -eq 'ci-test-second-secret-only')
-        $canWriteRuntime = $false
-        $canWriteApp = $false
-        $canWriteConfig = $false
-        $canWriteSecret = $false
-        try {
-            $path = Join-Path $runtime 'service-probe.tmp'
-            [IO.File]::WriteAllText($path,'ok')
-            Remove-Item -LiteralPath $path -Force
-            $canWriteRuntime = $true
-        } catch {}
-        try {
-            $path = Join-Path $PSScriptRoot 'service-probe.tmp'
-            [IO.File]::WriteAllText($path,'ok')
-            Remove-Item -LiteralPath $path -Force
-            $canWriteApp = $true
-        } catch {}
-        try {
-            $stream = [IO.File]::Open((Join-Path $root 'config.json'),[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)
-            $stream.Dispose()
-            $canWriteConfig = $true
-        } catch {}
-        try {
-            $stream = [IO.File]::Open((Join-Path $root 'secret.dpapi'),[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)
-            $stream.Dispose()
-            $canWriteSecret = $true
-        } catch {}
-        $result = [pscustomobject]@{
-            CanReadConfigAndDpapi=$canRead
-            CanWriteRuntime=$canWriteRuntime
-            CanWriteApp=$canWriteApp
-            CanWriteConfig=$canWriteConfig
-            CanWriteSecret=$canWriteSecret
-            Account=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-        }
-        $result | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $runtime 'service-probe.json') -Encoding UTF8
-        '@
+$ErrorActionPreference = 'Stop'
+try {
+    [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'runtime\service-probe.start.txt'),'started')
+    . (Join-Path $PSScriptRoot 'PSDynDNS.ps1')
+} catch {
+    try {
+        [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'runtime\service-probe.error.txt'), [string]$_.Exception.Message)
+    } catch {}
+    throw
+}
+$root = Split-Path -Parent $PSScriptRoot
+$cfg = Read-ClientConfig (Join-Path $root 'config.json')
+$key = Read-MachineSecret (Join-Path $root 'secret.dpapi')
+$runtime = Join-Path $root 'runtime'
+$canRead = ($cfg.Hostname -eq 'ci-changed.example.invalid' -and $key -eq 'ci-test-second-secret-only')
+$canWriteRuntime = $false
+$canWriteApp = $false
+$canWriteConfig = $false
+$canWriteSecret = $false
+try {
+    $path = Join-Path $runtime 'service-probe.tmp'
+    [IO.File]::WriteAllText($path,'ok')
+    Remove-Item -LiteralPath $path -Force
+    $canWriteRuntime = $true
+} catch {}
+try {
+    $path = Join-Path $PSScriptRoot 'service-probe.tmp'
+    [IO.File]::WriteAllText($path,'ok')
+    Remove-Item -LiteralPath $path -Force
+    $canWriteApp = $true
+} catch {}
+try {
+    $stream = [IO.File]::Open((Join-Path $root 'config.json'),[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)
+    $stream.Dispose()
+    $canWriteConfig = $true
+} catch {}
+try {
+    $stream = [IO.File]::Open((Join-Path $root 'secret.dpapi'),[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)
+    $stream.Dispose()
+    $canWriteSecret = $true
+} catch {}
+$result = [pscustomobject]@{
+    CanReadConfigAndDpapi=$canRead
+    CanWriteRuntime=$canWriteRuntime
+    CanWriteApp=$canWriteApp
+    CanWriteConfig=$canWriteConfig
+    CanWriteSecret=$canWriteSecret
+    Account=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+}
+$result | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $runtime 'service-probe.json') -Encoding UTF8
+'@
             $probeFile = Join-Path (Join-Path $script:InstallRoot 'app') 'CI-LocalService-Probe.ps1'
             [IO.File]::WriteAllText($probeFile,$sourceCode,(New-Object Text.UTF8Encoding($false)))
             $powershell = (Get-ScheduledTask -TaskName $script:TaskName).Actions[0].Execute
@@ -184,14 +184,14 @@ Describe 'PSDynDNS installation, task isolation and lifecycle' -Tag 'Integration
             $errorLog = Join-Path $env:windir 'Temp\PSDynDNS-CI-TaskError.txt'
             Remove-Item -LiteralPath $bootLog,$errorLog -Force -ErrorAction SilentlyContinue
             $cmd = @'
-        try {
-            [IO.File]::WriteAllText('__BOOT__','started')
-            & '__PROBE__'
-        } catch {
-            [IO.File]::WriteAllText('__ERR__',[string]$_.Exception.Message)
-            exit 3
-        }
-        '@
+try {
+    [IO.File]::WriteAllText('__BOOT__','started')
+    & '__PROBE__'
+} catch {
+    [IO.File]::WriteAllText('__ERR__',[string]$_.Exception.Message)
+    exit 3
+}
+'@
             $cmd = $cmd.Replace('__BOOT__',$bootLog).Replace('__ERR__',$errorLog).Replace('__PROBE__',$probeFile)
             $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
             $action = New-ScheduledTaskAction -Execute $powershell -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' + $encoded)
