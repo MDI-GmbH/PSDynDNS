@@ -22,8 +22,8 @@ C:\ProgramData\PSDynDNS\
   app\PSDynDNS.ps1
   config.json
   secret.dpapi
-  runtime\\state.json
-  runtime\\client.log
+  runtime\state.json
+  runtime\client.log
 ```
 
 `app` is writable by the task's own SID for future unprivileged updates. Configuration and secret files are read-only to the task. The task may write state and logs (the installer must explicitly provision their file permissions). Administrators and SYSTEM retain full access.
@@ -86,3 +86,28 @@ MIT.
 ## Release checklist
 
 Do **not** merge to main or publish an installable release until the Windows PowerShell 5.1 workflow is green and the administrator has tested LOCAL SERVICE ACLs, DPAPI, task scheduling, DNS requests, state recovery and cross-process self-update on an isolated Windows VM. A passing parser-only CI check is not sufficient for Windows security behavior.
+
+## Update channels
+
+The installer accepts `-UpdateChannel stable|beta|main` together with `-Configure`, `-AutoUpdate` and `-UpdateCheckHours`.
+
+- `stable` (default): highest published stable release from GitHub's `releases/latest`.
+- `beta`: highest published release, including pre-releases such as `v0.3.0-beta.1`; version selection follows the supported `alpha.N`, `beta.N`, `rc.N` order.
+- `main`: experimental; fetches `PSDynDNS.ps1` for the current `main` commit, validates its Git blob hash and compares its SHA-256 with the installed script.
+
+```powershell
+.\\Install-PSDynDNS.ps1 -Configure -AutoUpdate $true -UpdateChannel beta
+```
+
+The runtime currently uses GitHub's anonymous HTTPS API. Until the repository is public, GitHub downloads require authentication; **do not embed a personal access token in configuration or scheduled tasks**. The updater's file replacement and task ACLs still need an isolated Windows integration test.
+
+### Releasing
+
+The separate `.github/workflows/release.yml` workflow runs manually from `main`. In the Actions UI choose **Publish Release**, enter a version and select whether it is a pre-release. Examples:
+
+- `0.2.0`, pre-release unchecked, publishes `v0.2.0`.
+- `0.3.0-beta.1`, pre-release checked, publishes `v0.3.0-beta.1`.
+
+The workflow validates that the version is unique, stamps the client script with the selected version in the runner workspace, validates Windows PowerShell 5.1 syntax, runs Pester, packages standalone scripts and ZIP, writes `SHA256SUMS.txt`, and creates a draft GitHub Release with auto-generated notes. It publishes only after assets are uploaded successfully. Every release is manually initiated, and a merge into `main` produces only the normal CI artifact.
+
+**Release workflows must be present on the default branch before GitHub Actions will expose their manual dispatch buttons.** Do not publish stable releases before testing DPAPI/NTFS/task execution and updater rollback on a Windows VM.
