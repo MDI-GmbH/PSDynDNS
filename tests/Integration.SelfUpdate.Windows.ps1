@@ -115,22 +115,20 @@ try {
     Assert-Ci (-not (Test-Path -LiteralPath $good.Stage)) 'Helper consumes staged update'
 
     # Inject a deterministic failure at the SECOND move operation.
-    # This runs the unchanged embedded helper in a separate PowerShell process.
+    # Place the fault-injection function in the SAME script scope as the
+    # extracted production helper. A wrapper script around the helper
+    # can mask its exit code or fail to shadow Move-Item correctly.
     $dir = Join-Path $testRoot 'rollback'
     [IO.Directory]::CreateDirectory($dir) | Out-Null
     $original = Join-Path $dir 'PSDynDNS.ps1'
     $stage = $original + '.new'
     $backup = $original + '.bak'
     $helper = Join-Path $dir 'swap.ps1'
-    $inject = Join-Path $dir 'inject.ps1'
     [IO.File]::WriteAllText($original,'Write-Host "original"',$utf8)
     [IO.File]::WriteAllText($stage,'Write-Host "new version"',$utf8)
-    [IO.File]::WriteAllText($helper,(Get-RealHelper),$utf8)
     $originalHash = Hash-Ci $original
     $stageHash = Hash-Ci $stage
     $injection = @'
-param([string]$Original,[string]$Staged,[string]$Backup,[string]$Helper,[string]$Digest)
-$ErrorActionPreference = 'Stop'
 function Move-Item {
     [CmdletBinding()]
     param([string]$LiteralPath,[string]$Destination)
@@ -139,12 +137,15 @@ function Move-Item {
     }
     Microsoft.PowerShell.Management\Move-Item @PSBoundParameters
 }
-& $Helper -ParentPid 0 -Original $Original -Staged $Staged -Backup $Backup -Digest $Digest
 '@
-    [IO.File]::WriteAllText($inject,$injection,$utf8)
-    $rollbackOutput = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $inject -Original $original -Staged $stage -Backup $backup -Helper $helper -Digest $stageHash 2>&1
+    $actualHelper = Get-RealHelper
+    $firstTry = $actualHelper.IndexOf('try {',[StringComparison]::Ordinal)
+    if ($firstTry -lt 0) { throw 'Cannot locate helper fault injection point.' }
+    $injectedHelper = $actualHelper.Insert($firstTry,($injection + [Environment]::NewLine))
+    [IO.File]::WriteAllText($helper,$injectedHelper,$utf8)
+    $rollbackOutput = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $helper -ParentPid 0 -Original $original -Staged $stage -Backup $backup -Digest $stageHash 2>&1
     $exit = $LASTEXITCODE
-    if ($exit -ne 0) { $rollbackOutput | ForEach-Object { Write-Host ([string]$_) } }
+    if ($rollbackOutput) { $rollbackOutput | ForEach-Object { Write-Host ('Rollback process: ' + [string]$_) } }
     Assert-Ci ($exit -ne 0) 'Injected second move forces helper failure'
     Assert-Ci (Test-Path -LiteralPath $original -PathType Leaf) 'Rollback restores original file'
     Assert-Ci ((Hash-Ci $original) -eq $originalHash) 'Rollback restores original bytes'
