@@ -113,7 +113,8 @@ function Read-ClientConfig {
 
 function Get-ConfigurationFingerprint {
     param($Config)
-    $value = @([string]$Config.Hostname, [string]$Config.Username, [string]$Config.UpdateUrl,
+    $username = if ($null -ne $Config.PSObject.Properties['Username']) { [string]$Config.Username } else { '' }
+    $value = @([string]$Config.Hostname, $username, [string]$Config.UpdateUrl,
       [string]$Config.IPv4Enabled, [string]$Config.IPv6Enabled) -join '|'
     $hash = [Security.Cryptography.SHA256]::Create()
     try {
@@ -133,7 +134,12 @@ function Read-MachineSecret {
 
 function Get-PublicAddress {
     param([string]$Url, [System.Net.Sockets.AddressFamily]$Family)
-    $result = (Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 15 -MaximumRedirection 0 -Headers @{ 'User-Agent' = $script:UserAgent }).Content.Trim()
+    $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 15 -MaximumRedirection 0 -Headers @{ 'User-Agent' = $script:UserAgent }
+    $result = if ($response.Content -is [byte[]]) {
+        [Text.Encoding]::UTF8.GetString($response.Content).Trim()
+    } else {
+        ([string]$response.Content).Trim()
+    }
     $address = $null
     if (-not [Net.IPAddress]::TryParse($result, [ref]$address) -or $address.AddressFamily -ne $Family) { throw 'IP-check response is not an address of the expected family.' }
     if (-not (Test-PublicIp $address)) {
