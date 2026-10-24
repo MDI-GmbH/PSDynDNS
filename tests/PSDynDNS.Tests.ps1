@@ -16,9 +16,18 @@ Describe 'PSDynDNS DynDNS2 protocol' {
         Get-ResponseCategory 'dnserr' | Should -Be 'retry'
     }
     It 'rejects HTTP endpoints and URL credentials' {
-        { Assert-HttpsUrl 'http://example.org/nic/update' } | Should -Throw
-        { Assert-HttpsUrl 'https://user:pass@example.org/nic/update' } | Should -Throw
-        { Assert-HttpsUrl 'https://example.org/nic/update' } | Should -Not -Throw
+        $cfg = [pscustomobject]@{
+            Hostname = 'test.example.org'
+            UpdateUrl = 'https://example.org/nic/update'
+            IPv4Enabled = $true
+            IPv6Enabled = $false
+            IPv4CheckUrl = 'https://example.org/ip4'
+        }
+        { Assert-PSDynDnsSettings $cfg } | Should -Not -Throw
+        $cfg.UpdateUrl = 'http://example.org/nic/update'
+        { Assert-PSDynDnsSettings $cfg } | Should -Throw
+        $cfg.UpdateUrl = 'https://user:pass@example.org/nic/update'
+        { Assert-PSDynDnsSettings $cfg } | Should -Throw
     }
     It 'changes configuration fingerprint when target changes' {
         $a = [pscustomobject]@{ Hostname='one.example.org'; Username=$null; UpdateUrl='https://example.org/nic/update'; IPv4Enabled=$true; IPv6Enabled=$false }
