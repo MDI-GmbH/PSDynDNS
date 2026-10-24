@@ -188,7 +188,7 @@ function Get-ExistingTaskInterval {
     return 10
 }
 function Install-ClientFile {
-    param([string]$Source)
+    param([string]$Source,[ValidateSet('stable','beta','main')][string]$Channel='stable')
     $destination = Join-Path $script:App 'PSDynDNS.ps1'
     if ($Source) {
         if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) { throw 'Local client file not found.' }
@@ -198,8 +198,117 @@ function Install-ClientFile {
         Copy-Item -LiteralPath $Source -Destination $destination -Force
     } else {
         # Only official release assets are accepted. Development can use -LocalClientPath.
-        $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases/latest' -Headers @{'User-Agent'='PSDynDNS-Installer'} -TimeoutSec 20
-        if ($release.prerelease -or $release.draft) { throw 'Expected a stable release.' }
+        if ($Channel -eq 'main') { throw 'Installing main directly requires -LocalClientPath; stable or beta needs a published GitHub Release.' }
+        $url = if ($Channel -eq 'beta') {
+            'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases?per_page=100'
+        } else { 'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases/latest' }
+        $releases = @(Invoke-RestMethod -Uri $url -Headers @{'User-Agent'='PSDynDNS-Installer'} -TimeoutSec 20)
+        $release = if ($Channel -eq 'beta') {
+            $releases | Where-Object { -not $_.draft -and $_.prerelease -and [string]$_.tag_name -match '^v?\d+\.\d+\.\d+-(?:alpha|beta|rc)\.\d+
+        $asset = @($release.assets | Where-Object { $_.name -eq 'PSDynDNS.ps1' }) | Select-Object -First 1
+        if (-not $asset -or -not $asset.digest -or $asset.digest -notmatch '^sha256:([0-9a-fA-F]{64})$') { throw 'Release asset digest unavailable.' }
+        $expected = $Matches[1]
+        $temp = Join-Path $env:TEMP ('PSDynDNS-' + [guid]::NewGuid().ToString('N') + '.ps1')
+        try {
+            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $temp -UseBasicParsing -TimeoutSec 60
+            if ((Get-FileHash -LiteralPath $temp -Algorithm SHA256).Hash -ne $expected) { throw 'Downloaded release failed SHA-256 verification.' }
+            $errors = $null
+            $null = [Management.Automation.Language.Parser]::ParseFile($temp,[ref]$null,[ref]$errors)
+            if ($errors.Count) { throw 'Downloaded PowerShell file contains syntax errors.' }
+            Copy-Item -LiteralPath $temp -Destination $destination -Force
+        } finally { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+    }
+    Set-ProtectedAcl $destination -ClientRead
+}
+Assert-Admin
+if (-not $PSVersionTable.PSVersion -or $PSVersionTable.PSVersion -lt [version]'5.1') { throw 'PowerShell 5.1 or 7+ is required.' }
+$script:TaskPrincipalSid = Get-TaskSid
+switch ($PSCmdlet.ParameterSetName) {
+    Install {
+        if (Test-Path -LiteralPath $script:ConfigPath) { throw 'Already installed. Pass setting parameters to reconfigure, or use -Repair.' }
+        if (-not $Hostname) { throw 'Supply -Hostname for installation.' }
+        Ensure-Directories
+        $cfg = [pscustomobject]@{
+            Hostname=$Hostname; Username=$null; UpdateUrl='https://nsupdate.info/nic/update'
+            IPv4Enabled=$true; IPv6Enabled=$false
+            IPv4CheckUrl='https://ipv4.nsupdate.info/myip'
+            IPv6CheckUrl='https://ipv6.nsupdate.info/myip'
+            AutoUpdate=$false; UpdateCheckHours=24; UpdateChannel='stable'
+        }
+        $cfg = Apply-Settings $cfg
+        Install-ClientFile -Source $LocalClientPath -Channel $cfg.UpdateChannel
+        Save-Settings $cfg
+        Save-Secret
+        $minutes = if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes')) { [int]$IntervalMinutes } else { 10 }
+        $runtime = if ($Runtime) { $Runtime } else { 'WindowsPowerShell' }
+        Install-Task -Minutes $minutes -Runtime $runtime
+        # Reapply permissions using Windows' registered NT TASK SID, not just the pre-registration hash.
+        Ensure-Directories
+        Set-ProtectedAcl (Join-Path $script:App 'PSDynDNS.ps1') -ClientRead
+        Set-ProtectedAcl $script:ConfigPath -ClientRead
+        Set-ProtectedAcl (Join-Path $script:Root 'secret.dpapi') -ClientRead
+        Write-Host 'PSDynDNS installed.'
+    }
+    Configure {
+        $settings = @('Hostname','Username','UpdateUrl','IPv4Enabled','IPv6Enabled','IPv4CheckUrl','IPv6CheckUrl','AutoUpdate','UpdateCheckHours','UpdateChannel','IntervalMinutes','Runtime')
+        if (@($settings | Where-Object { $script:InstallerBoundParameters.ContainsKey($_) }).Count -eq 0) {
+            throw 'No settings supplied. Pass the settings to change or use -Help.'
+        }
+        $cfg = Apply-Settings (Read-Settings)
+        Save-Settings $cfg
+        if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes') -or $script:InstallerBoundParameters.ContainsKey('Runtime')) {
+            $minutes = if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes')) { [int]$IntervalMinutes } else { Get-ExistingTaskInterval }
+            $runtime = if ($Runtime) { $Runtime } else { Get-ExistingTaskRuntime }
+            Install-Task -Minutes $minutes -Runtime $runtime
+        }
+        Write-Host 'Configuration saved.'
+    }
+    Repair {
+        $cfg = Read-Settings
+        $channel = if ($cfg.PSObject.Properties['UpdateChannel']) { [string]$cfg.UpdateChannel } else { 'stable' }
+        $minutes = if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes')) { [int]$IntervalMinutes } else { Get-ExistingTaskInterval }
+        $runtime = if ($Runtime) { $Runtime } else { Get-ExistingTaskRuntime }
+        Ensure-Directories
+        foreach ($name in @('config.json','secret.dpapi')) {
+            $p = Join-Path $script:Root $name
+            if (-not (Test-Path -LiteralPath $p)) { throw "Missing $name; cannot repair without reinstalling/setting secret." }
+            Set-ProtectedAcl $p -ClientRead
+        }
+        $client = Join-Path $script:App 'PSDynDNS.ps1'
+        if (-not (Test-Path -LiteralPath $client)) { Install-ClientFile -Source $LocalClientPath -Channel $channel }
+        else { Set-ProtectedAcl $client -ClientRead }
+        Install-Task -Minutes $minutes -Runtime $runtime
+        Ensure-Directories
+        Set-ProtectedAcl $client -ClientRead
+        Set-ProtectedAcl $script:ConfigPath -ClientRead
+        Set-ProtectedAcl (Join-Path $script:Root 'secret.dpapi') -ClientRead
+        Write-Host 'PSDynDNS repaired.'
+    }
+    SetKey {
+        if (-not (Test-Path -LiteralPath $script:ConfigPath)) { throw 'Install first.' }
+        Save-Secret
+        Write-Host 'Secret updated.'
+    }
+    ResetState {
+        $state = Join-Path (Join-Path $script:Root 'runtime') 'state.json'
+        if (-not (Test-Path -LiteralPath $script:ConfigPath)) { throw 'PSDynDNS is not installed.' }
+        if (Test-Path -LiteralPath $state) { Remove-Item -LiteralPath $state -Force }
+        '{}' | Set-Content -LiteralPath $state -Encoding UTF8
+        Set-ProtectedAcl $state -ClientModify
+        Write-Host 'DynDNS state cleared; next scheduled run will refresh DNS.'
+    }
+    Uninstall {
+        Unregister-ScheduledTask -TaskName $script:TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $script:App) { Remove-Item -LiteralPath $script:App -Recurse -Force }
+        if ($Purge -and (Test-Path -LiteralPath $script:Root)) { Remove-Item -LiteralPath $script:Root -Recurse -Force }
+        Write-Host 'PSDynDNS uninstalled.'
+    }
+}
+ } | Select-Object -First 1
+        } else { $releases | Select-Object -First 1 }
+        if (-not $release -or $release.draft -or ($Channel -eq 'stable' -and $release.prerelease)) {
+            throw "No valid published $Channel release available."
+        }
         $asset = @($release.assets | Where-Object { $_.name -eq 'PSDynDNS.ps1' }) | Select-Object -First 1
         if (-not $asset -or -not $asset.digest -or $asset.digest -notmatch '^sha256:([0-9a-fA-F]{64})$') { throw 'Release asset digest unavailable.' }
         $expected = $Matches[1]
