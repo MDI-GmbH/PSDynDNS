@@ -4,8 +4,6 @@
 [![Coverage (dev)](https://codecov.io/gh/MDI-GmbH/PSDynDNS/branch/dev/graph/badge.svg)](https://app.codecov.io/gh/MDI-GmbH/PSDynDNS/tree/dev)
 [![Release](https://img.shields.io/github/v/release/MDI-GmbH/PSDynDNS?include_prereleases&label=release)](https://github.com/MDI-GmbH/PSDynDNS/releases)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Windows PowerShell 5.1](https://img.shields.io/badge/Windows%20PowerShell-5.1-5391FE)
-![PowerShell 7 tests](https://img.shields.io/badge/PowerShell%207-compatibility%20tests-5391FE)
 
 **Lightweight DynDNS2 client for Windows PowerShell 5.1 and PowerShell 7.** Updates IPv4 and IPv6 DNS records when your public IP changes, using a Windows Scheduled Task and no external runtime modules.
 
@@ -63,7 +61,7 @@ The installer asks for the DynDNS secret interactively. The scheduler interval i
 | `.\Install-PSDynDNS.ps1 -Uninstall` | Remove executable and task, retain configuration |
 | `.\Install-PSDynDNS.ps1 -Uninstall -Purge` | Remove installation including configuration and secret |
 
-Runtime defaults to Windows PowerShell 5.1; DNS resolvers default to `8.8.8.8` and `8.8.4.4`. Both can be changed through the installer. Manual `-UpdateClient` uses the configured update channel unless overridden; it validates the replacement, temporarily stops the Scheduled Task, keeps a timestamped backup and restores the prior task state. It does not modify configuration, DPAPI secrets, or automatic-update preferences.
+Runtime defaults to Windows PowerShell 5.1; DNS resolvers default to `8.8.8.8` and `8.8.4.4`. Both can be changed through the installer. If a configured resolver cannot answer, PSDynDNS retries the entire A/AAAA comparison via Windows-configured DNS (including domain or VPN DNS); conflicting DNS answers and valid no-record replies never trigger this fallback. If both paths fail, the DynDNS update is skipped. Manual `-UpdateClient` uses the configured update channel unless overridden; it validates the replacement, temporarily stops the Scheduled Task, keeps a timestamped backup and restores the prior task state. It does not modify configuration, DPAPI secrets, or automatic-update preferences.
 
 New installations explicitly set `AllowAutomaticConfigUpdates` to `true`. Set it to `false` with `-AllowAutomaticConfigUpdates $false` to decline any **future** automatic edits of `config.json`. Existing installations without the option remain opted out until an administrator explicitly enables it. This setting does not change config files or NTFS permissions today.
 

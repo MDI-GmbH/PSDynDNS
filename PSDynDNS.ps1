@@ -84,7 +84,12 @@ function Assert-PSDynDnsSettings {
 function Select-PSDynDnsRelease {
     param([object[]]$Releases, [ValidateSet('stable','beta')][string]$Channel)
     $candidates = @()
-    foreach ($release in $Releases) {
+    # Invoke-RestMethod can return a JSON array as a single object[] on the
+    # pipeline (notably Windows PowerShell 5.1). Accept both API shapes.
+    $flatReleases = foreach ($item in $Releases) {
+        foreach ($release in @($item)) { $release }
+    }
+    foreach ($release in $flatReleases) {
         if ($release.draft -or ($Channel -eq 'stable' -and $release.prerelease)) { continue }
         $tag = [string]$release.tag_name
         if ($tag -notmatch '^v?(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)\.(\d+))?$') { continue }
@@ -169,38 +174,72 @@ function Get-PublicAddress {
 }
 
 function Get-PublishedDnsAddresses {
-    param([string]$Hostname,[ValidateSet('A','AAAA')][string]$RecordType,[string[]]$Servers)
-    if (-not $Servers -or $Servers.Count -eq 0) { $Servers = @('8.8.8.8','8.8.4.4') }
+    param(
+        [string]$Hostname,
+        [ValidateSet('A','AAAA')][string]$RecordType,
+        [string[]]$Servers,
+        [switch]$UseSystemResolvers
+    )
+    if ($UseSystemResolvers) {
+        # Omitting -Server respects Windows DNS client settings (including VPN/NRPT).
+        $Servers = @('Windows system DNS')
+    } elseif (-not $Servers -or $Servers.Count -eq 0) {
+        $Servers = @('8.8.8.8','8.8.4.4')
+    }
     $observations = @()
     foreach ($server in $Servers) {
         $records = @()
+        $lookup = @{
+            Name=$Hostname; Type=$RecordType; DnsOnly=$true
+            NoHostsFile=$true; ErrorAction='Stop'
+        }
+        if (-not $UseSystemResolvers) { $lookup.Server = $server }
         try {
-            $records = @(Resolve-DnsName -Name $Hostname -Type $RecordType -Server $server -DnsOnly -NoHostsFile -ErrorAction Stop)
+            $records = @(Resolve-DnsName @lookup)
         } catch {
             $errorId = [string]$_.FullyQualifiedErrorId
             if ($errorId -notmatch 'DNS_ERROR_RCODE_NAME_ERROR|DNS_INFO_NO_RECORDS|DNS_ERROR_RCODE_NXRRSET') {
-                throw ("DNS lookup for $RecordType via $server failed: " + $_.Exception.Message)
+                $message = "DNS lookup for $RecordType via $server failed: " + $_.Exception.Message
+                if ($UseSystemResolvers) { throw $message }
+                # Only a failed preferred resolver triggers local DNS fallback.
+                # Disagreement and valid DNS no-record answers never trigger it.
+                $failure = New-Object System.InvalidOperationException($message)
+                $failure.Data['PSDynDNS-PreferredResolverUnavailable'] = $true
+                throw $failure
             }
         }
         $values = @($records | Where-Object { [string]$_.Type -eq $RecordType -and $_.IPAddress } |
             ForEach-Object { ([Net.IPAddress]::Parse([string]$_.IPAddress)).ToString() } | Sort-Object -Unique)
+        # Check agreement immediately. A later resolver timeout must not
+        # suppress conflicting answers and trigger Windows DNS fallback.
+        if ($observations.Count -gt 0 -and
+            (@($values) -join ',') -ne (@($observations[0].Addresses) -join ',')) {
+            throw "DNS resolvers disagree about $RecordType records; retry after cache TTL."
+        }
         $observations += [pscustomobject]@{Server=$server;Addresses=$values}
-    }
-    $first = (@($observations[0].Addresses) -join ',')
-    foreach ($observation in $observations) {
-        if ((@($observation.Addresses) -join ',') -ne $first) { throw "DNS resolvers disagree about $RecordType records; retry after cache TTL." }
     }
     return @($observations[0].Addresses)
 }
 function Get-DnsComparison {
     param([string]$Hostname,[string[]]$Servers,[string]$IPv4,[string]$IPv6,[bool]$IPv4Enabled,[bool]$IPv6Enabled)
     $v4 = @(); $v6 = @()
-    if ($IPv4Enabled) { $v4 = @(Get-PublishedDnsAddresses -Hostname $Hostname -RecordType A -Servers $Servers) }
-    if ($IPv6Enabled) { $v6 = @(Get-PublishedDnsAddresses -Hostname $Hostname -RecordType AAAA -Servers $Servers) }
+    $resolverSource = 'configured'
+    try {
+        if ($IPv4Enabled) { $v4 = @(Get-PublishedDnsAddresses -Hostname $Hostname -RecordType A -Servers $Servers) }
+        if ($IPv6Enabled) { $v6 = @(Get-PublishedDnsAddresses -Hostname $Hostname -RecordType AAAA -Servers $Servers) }
+    } catch {
+        if (-not $_.Exception.Data['PSDynDNS-PreferredResolverUnavailable']) { throw }
+        # Retry ALL enabled families via one source, never mix preferred and local
+        # observations. A failure of Windows DNS also fails closed.
+        $resolverSource = 'system'
+        $v4 = @(); $v6 = @()
+        if ($IPv4Enabled) { $v4 = @(Get-PublishedDnsAddresses -Hostname $Hostname -RecordType A -UseSystemResolvers) }
+        if ($IPv6Enabled) { $v6 = @(Get-PublishedDnsAddresses -Hostname $Hostname -RecordType AAAA -UseSystemResolvers) }
+    }
     $matches = (-not $IPv4Enabled -or ($v4.Count -eq 1 -and $v4[0] -eq $IPv4)) -and
                (-not $IPv6Enabled -or ($v6.Count -eq 1 -and $v6[0] -eq $IPv6))
     $observation = ('A=' + ($v4 -join ',') + ';AAAA=' + ($v6 -join ','))
-    return [pscustomobject]@{ Matches=[bool]$matches; Observation=$observation }
+    return [pscustomobject]@{ Matches=[bool]$matches; Observation=$observation; ResolverSource=$resolverSource }
 }
 
 function Invoke-DynDnsRequest {
@@ -346,7 +385,8 @@ function Get-UpdateCandidate {
         return [pscustomobject]@{Version=$null;Sha256=$digest;Content=$bytes;Commit=[string]$commit.sha;Channel='main'}
     }
     $url = if ($Channel -eq 'stable') { 'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases/latest' } else { 'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases?per_page=100' }
-    $releases = @(Invoke-RestMethod -Uri $url -TimeoutSec 25 -Headers $headers)
+    $apiResponse = Invoke-RestMethod -Uri $url -TimeoutSec 25 -Headers $headers
+    $releases = @($apiResponse)
     return Select-PSDynDnsRelease -Releases $releases -Channel $Channel
 }
 function Test-CandidateNewer {
@@ -575,6 +615,9 @@ function Invoke-Client {
             $dnsResult = Get-DnsComparison -Hostname $config.Hostname -Servers $servers `
                 -IPv4 $ipv4 -IPv6 $ipv6 `
                 -IPv4Enabled $config.IPv4Enabled -IPv6Enabled $config.IPv6Enabled
+            if ($dnsResult.PSObject.Properties['ResolverSource'] -and $dnsResult.ResolverSource -eq 'system') {
+                Write-ClientLog $logPath WARN 'Preferred DNS resolvers unavailable; using Windows system DNS for DNS comparison.'
+            }
             if ($dnsResult.Matches) {
                 Write-Verbose 'DNS records already match public IP; provider request skipped.'
                 Write-ClientLog $logPath INFO 'DNS A/AAAA records match public IP; provider request skipped.'
