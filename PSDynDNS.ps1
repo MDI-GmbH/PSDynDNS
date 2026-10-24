@@ -372,10 +372,16 @@ try {
         # The helper must run in the same edition as the client.
         $exeName = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
         $exe = Join-Path $PSHOME $exeName
-        $args = '-NoProfile -NonInteractive -ExecutionPolicy Bypass ' +
+        # Build the entire template before applying -f. The formatting
+        # operator binds more tightly than string concatenation in PowerShell.
+        $argsTemplate = (
+            '-NoProfile -NonInteractive -ExecutionPolicy Bypass ' +
             '-File "{0}" -ParentPid {1} -Original "{2}" -Staged "{3}" ' +
-            '-Backup "{4}" -Digest "{5}"' -f
+            '-Backup "{4}" -Digest "{5}"'
+        )
+        $args = $argsTemplate -f (
             $helperPath, $PID, $target, $newFile, $backup, $Release.Sha256
+        )
         Start-Process -FilePath $exe -ArgumentList $args -WindowStyle Hidden | Out-Null
     } catch {
         Remove-Item -LiteralPath $newFile -Force -ErrorAction SilentlyContinue
