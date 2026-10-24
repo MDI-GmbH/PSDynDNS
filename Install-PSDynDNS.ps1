@@ -50,6 +50,16 @@ function Assert-PSDynDnsSettings {
             throw 'Hostname must be a valid FQDN.'
         }
     }
+    # Reject truthy JSON strings such as "false" instead of silently
+    # enabling an address family or automatic updates.
+    foreach ($name in @('IPv4Enabled','IPv6Enabled','AutoUpdate')) {
+        $property = $Cfg.PSObject.Properties[$name]
+        if ($null -eq $property) {
+            if ($name -eq 'AutoUpdate') { continue }
+            throw "$name must be a JSON boolean."
+        }
+        if ($property.Value -isnot [bool]) { throw "$name must be a JSON boolean." }
+    }
     if (-not $Cfg.IPv4Enabled -and -not $Cfg.IPv6Enabled) { throw 'Enable IPv4 and/or IPv6.' }
     $urls = @('UpdateUrl')
     if ($Cfg.IPv4Enabled) { $urls += 'IPv4CheckUrl' }
@@ -246,6 +256,18 @@ function Save-Secret {
     } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
     Set-ProtectedAcl (Join-Path $script:Root 'secret.dpapi') -ClientRead
 }
+function Protect-InstalledFiles {
+    param([switch]$ConfigurationOnly)
+    $names = @('config.json','secret.dpapi')
+    if (-not $ConfigurationOnly) { $names += 'app\PSDynDNS.ps1' }
+    foreach ($name in $names) {
+        $path = Join-Path $script:Root $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Missing $name; cannot protect installation."
+        }
+        Set-ProtectedAcl $path -ClientRead
+    }
+}
 function Install-Task {
     param([int]$Minutes, [ValidateSet('WindowsPowerShell','PowerShell7')][string]$Runtime='WindowsPowerShell')
     if ($Minutes -lt 1 -or $Minutes -gt 1440) { throw 'IntervalMinutes must be between 1 and 1440.' }
@@ -341,9 +363,7 @@ switch ($PSCmdlet.ParameterSetName) {
         Install-Task -Minutes $minutes -Runtime $runtime
         # Reapply permissions using Windows' registered NT TASK SID, not just the pre-registration hash.
         Ensure-Directories
-        Set-ProtectedAcl (Join-Path $script:App 'PSDynDNS.ps1') -ClientRead
-        Set-ProtectedAcl $script:ConfigPath -ClientRead
-        Set-ProtectedAcl (Join-Path $script:Root 'secret.dpapi') -ClientRead
+        Protect-InstalledFiles
         Write-Host 'PSDynDNS installed.'
     }
     Configure {
@@ -370,19 +390,13 @@ switch ($PSCmdlet.ParameterSetName) {
         $minutes = if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes')) { [int]$IntervalMinutes } else { Get-ExistingTaskInterval }
         $runtime = if ($Runtime) { $Runtime } else { Get-ExistingTaskRuntime }
         Ensure-Directories
-        foreach ($name in @('config.json','secret.dpapi')) {
-            $p = Join-Path $script:Root $name
-            if (-not (Test-Path -LiteralPath $p)) { throw "Missing $name; cannot repair without reinstalling/setting secret." }
-            Set-ProtectedAcl $p -ClientRead
-        }
+        Protect-InstalledFiles -ConfigurationOnly
         $client = Join-Path $script:App 'PSDynDNS.ps1'
         if (-not (Test-Path -LiteralPath $client)) { Install-ClientFile -Source $LocalClientPath -Channel $channel }
         else { Set-ProtectedAcl $client -ClientRead }
         Install-Task -Minutes $minutes -Runtime $runtime
         Ensure-Directories
-        Set-ProtectedAcl $client -ClientRead
-        Set-ProtectedAcl $script:ConfigPath -ClientRead
-        Set-ProtectedAcl (Join-Path $script:Root 'secret.dpapi') -ClientRead
+        Protect-InstalledFiles
         Write-Host 'PSDynDNS repaired.'
     }
     SetKey {

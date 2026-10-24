@@ -50,6 +50,30 @@ Describe 'PSDynDNS DynDNS2 protocol' {
     }
 }
 
+Describe 'Strict JSON boolean validation' {
+    It 'rejects a string, number or null for each boolean setting' {
+        foreach ($field in @('IPv4Enabled','IPv6Enabled','AutoUpdate')) {
+            foreach ($bad in @('false','true',0,1,$null)) {
+                $cfg = [pscustomobject]@{
+                    Hostname='host.example.org';UpdateUrl='https://example.org/update'
+                    IPv4Enabled=$true;IPv6Enabled=$false;AutoUpdate=$false
+                    IPv4CheckUrl='https://example.org/myip'
+                }
+                $cfg.$field = $bad
+                { Assert-PSDynDnsSettings $cfg } | Should -Throw "*$field*"
+            }
+        }
+    }
+    It 'accepts a legacy configuration without AutoUpdate' {
+        $cfg = [pscustomobject]@{
+            Hostname='host.example.org';UpdateUrl='https://example.org/update'
+            IPv4Enabled=$true;IPv6Enabled=$false
+            IPv4CheckUrl='https://example.org/myip'
+        }
+        { Assert-PSDynDnsSettings $cfg } | Should -Not -Throw
+    }
+}
+
 Describe 'Future automatic configuration opt-in' {
     It 'permits only an explicitly enabled boolean value' {
         (Test-AutomaticConfigUpdatesAllowed ([pscustomobject]@{
@@ -82,7 +106,7 @@ Describe 'IP address validation' {
 Describe 'State persistence' {
     It 'creates a state with optional update timestamp' {
         $state = Read-ClientState (Join-Path $TestDrive 'missing.json')
-        $state.LastUpdateCheckUtc | Should -BeNullOrEmpty
+        $state.LastUpdateAttemptUtc | Should -BeNullOrEmpty
     }
     It 'round-trips state in runtime' {
         $path = Join-Path $TestDrive 'state.json'
@@ -102,7 +126,7 @@ Describe 'Release response handling' {
         Get-ResponseCategory 'mystery 8.8.8.8' | Should -Be 'unknown'
     }
     It 'does not schedule an update when disabled' {
-        $state = New-Object psobject -Property @{ LastUpdateCheckUtc = $null }
+        $state = New-Object psobject -Property @{ LastUpdateAttemptUtc = $null }
         $config = New-Object psobject -Property @{ AutoUpdate = $false; UpdateCheckHours = 24 }
         Mock Get-UpdateCandidate { throw 'Should not be called' }
         Invoke-SoftwareUpdate $config $state (Join-Path $TestDrive 's.json') (Join-Path $TestDrive 'x.log')
@@ -122,7 +146,7 @@ Describe 'Update channels and release ordering' {
     }
     It 'uses stable by default if config predates update channels' {
         $config = [pscustomobject]@{AutoUpdate=$false;UpdateCheckHours=24}
-        $state = [pscustomobject]@{LastUpdateCheckUtc=$null}
+        $state = [pscustomobject]@{LastUpdateAttemptUtc=$null}
         { Invoke-SoftwareUpdate $config $state (Join-Path $TestDrive 'state.json') (Join-Path $TestDrive 'log.txt') } | Should -Not -Throw
     }
 }

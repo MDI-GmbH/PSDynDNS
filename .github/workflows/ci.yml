@@ -165,26 +165,3 @@ jobs:
           } finally {
             [IO.File]::WriteAllBytes($asset, $original)
           }
-
-  build:
-    name: build
-    needs: [tests-ps51, tests-ps7]
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: windows-2022
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - name: Assemble release package
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
-          Compress-Archive -Path PSDynDNS.ps1,Install-PSDynDNS.ps1,config.example.json,README.md,LICENSE -DestinationPath dist/PSDynDNS.zip -Force
-          Get-FileHash dist/PSDynDNS.zip -Algorithm SHA256 | Format-List | Out-String | Set-Content dist/PSDynDNS.sha256
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: PSDynDNS-build
-          path: dist/*
-          if-no-files-found: error

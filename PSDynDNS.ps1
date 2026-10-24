@@ -37,6 +37,16 @@ function Assert-PSDynDnsSettings {
             throw 'Hostname must be a valid FQDN.'
         }
     }
+    # Reject truthy JSON strings such as "false" instead of silently
+    # enabling an address family or automatic updates.
+    foreach ($name in @('IPv4Enabled','IPv6Enabled','AutoUpdate')) {
+        $property = $Cfg.PSObject.Properties[$name]
+        if ($null -eq $property) {
+            if ($name -eq 'AutoUpdate') { continue }
+            throw "$name must be a JSON boolean."
+        }
+        if ($property.Value -isnot [bool]) { throw "$name must be a JSON boolean." }
+    }
     if (-not $Cfg.IPv4Enabled -and -not $Cfg.IPv6Enabled) { throw 'Enable IPv4 and/or IPv6.' }
     $urls = @('UpdateUrl')
     if ($Cfg.IPv4Enabled) { $urls += 'IPv4CheckUrl' }
@@ -231,7 +241,7 @@ function Read-ClientState {
     param([string]$Path)
     $fields = @(
         'LastIPv4', 'LastIPv6', 'Fingerprint', 'BlockedReason', 'RetryAfterUtc',
-        'LastUpdateCheckUtc', 'LastUpdateAttemptUtc', 'LastSuccessfulUpdateCheckUtc',
+        'LastUpdateAttemptUtc', 'LastSuccessfulUpdateCheckUtc',
         'LastProviderUpdateUtc', 'LastDnsObservation'
     )
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -558,7 +568,6 @@ function Invoke-Client {
             LastIPv6 = $state.LastIPv6
             BlockedReason = $null
             RetryAfterUtc = $null
-            LastUpdateCheckUtc = $state.LastUpdateCheckUtc
             LastUpdateAttemptUtc = $state.LastUpdateAttemptUtc
             LastSuccessfulUpdateCheckUtc = $state.LastSuccessfulUpdateCheckUtc
             LastProviderUpdateUtc = $state.LastProviderUpdateUtc

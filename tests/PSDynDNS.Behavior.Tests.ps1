@@ -35,6 +35,17 @@ Describe 'State, HTTP and configuration regression tests' {
         $cfg.IPv6Enabled = $true
         { Assert-PSDynDnsSettings $cfg } | Should -Throw
     }
+    It 'rejects an invalid IP-check service response' {
+        Mock Invoke-WebRequest { [pscustomobject]@{Content='invalid-ip'} }
+        { Get-PublicAddress -Url 'https://example.org/myip' -Family ([Net.Sockets.AddressFamily]::InterNetwork) } |
+            Should -Throw '*expected family*'
+    }
+    It 'rejects a redirected IP-check response' {
+        Mock Invoke-WebRequest { throw 'simulated redirect rejected' }
+        { Get-PublicAddress -Url 'https://example.org/myip' -Family ([Net.Sockets.AddressFamily]::InterNetwork) } |
+            Should -Throw '*redirect*'
+        Should -Invoke Invoke-WebRequest -Times 1 -Exactly -ParameterFilter { $MaximumRedirection -eq 0 }
+    }
     It 'decodes binary public-IP response content' {
         Mock Invoke-WebRequest { [pscustomobject]@{Content=[Text.Encoding]::UTF8.GetBytes('8.8.8.8')} }
         Get-PublicAddress -Url 'https://example.org/myip' -Family ([Net.Sockets.AddressFamily]::InterNetwork) | Should -Be '8.8.8.8'
