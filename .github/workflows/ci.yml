@@ -54,9 +54,22 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $result = Invoke-Pester -Path ./tests -PassThru -Output Detailed
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { exit 1 }
+  integration:
+    name: integration-windows
+    needs: test
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise actual bootstrap installer and LOCAL SERVICE scheduled task
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./tests/Integration.Windows.ps1
+
   build:
     name: build
-    needs: test
+    needs: [test, integration]
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: windows-2022
     timeout-minutes: 5
