@@ -94,6 +94,15 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
+      - name: Install Pester 5
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Force -Scope CurrentUser -SkipPublisherCheck -Confirm:$false
+          Import-Module Pester -MinimumVersion 5.0 -ErrorAction Stop
       - name: Install and run under Windows PowerShell 5.1
         shell: powershell
         run: |
@@ -114,6 +123,14 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
+      - name: Install Pester for PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -ge 5 })) {
+            Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Scope CurrentUser -Force -Confirm:$false
+          }
+          Import-Module Pester -MinimumVersion 5.0
       - name: Install and run under PowerShell 7
         shell: pwsh
         run: |
