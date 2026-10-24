@@ -355,7 +355,7 @@ Describe 'Config, DPAPI and local state fault handling' {
     }
     It 'rejects non-object JSON as runtime state' {
         $stateFile = Join-Path $TestDrive 'scalar.json'
-        '"not-a-state"' | Set-Content -LiteralPath $stateFile
+        'null' | Set-Content -LiteralPath $stateFile
         { Read-ClientState $stateFile } | Should -Throw '*JSON object*'
     }
 }
