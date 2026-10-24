@@ -158,62 +158,43 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $expected = $env:VERSION
           $tag = $env:TAG
-          $scriptPath = Join-Path $PWD 'dist/PSDynDNS.ps1'
+          $client = Join-Path $PWD 'dist/PSDynDNS.ps1'
           $zipPath = Join-Path $PWD ("dist/PSDynDNS-$tag.zip")
-          $checksumsPath = Join-Path $PWD 'dist/SHA256SUMS.txt'
-
-          # Verify the exact file that will be published, not only source.
-          $scriptBytes = [IO.File]::ReadAllBytes($scriptPath)
-          $scriptText = [Text.Encoding]::UTF8.GetString($scriptBytes)
-          $versionLines = @(
-            [regex]::Matches($scriptText, '(?m)^\$script:Version\s*=\s*''([^'']+)''\s*        env:
-          GH_TOKEN: ${{ github.token }}
-          PRERELEASE: ${{ inputs.prerelease }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $args = @('release','create',$env:TAG,'dist/PSDynDNS.ps1','dist/Install-PSDynDNS.ps1',("dist/PSDynDNS-$env:TAG.zip"),'dist/SHA256SUMS.txt','--repo',$env:GITHUB_REPOSITORY,'--target',$env:GITHUB_SHA,'--title',("PSDynDNS "+$env:TAG),'--draft','--generate-notes')
-          if ($env:PRERELEASE -eq 'true') { $args += '--prerelease' }
-          & gh @args
-          if ($LASTEXITCODE -ne 0) { throw 'Could not create draft release.' }
-          gh release edit $env:TAG --repo $env:GITHUB_REPOSITORY --draft=false
-          if ($LASTEXITCODE -ne 0) { throw 'Draft release exists, but publishing failed.' }
-)
-          )
-          if ($versionLines.Count -ne 1 -or $versionLines[0].Groups[1].Value -cne $expected) {
-            throw "Published client does not contain exactly the expected version $expected."
+          $contents = [IO.File]::ReadAllText($client)
+          $matchingLines = @($contents -split "[`r`n]+" | Where-Object {
+            $_ -match '^\$script:Version\s*='
+          })
+          $expectedLine = '$script:Version = ' + [char]39 + $expected + [char]39
+          if ($matchingLines.Count -ne 1 -or $matchingLines[0] -cne $expectedLine) {
+            throw "Release asset version must be exactly $expected."
           }
-          if ($scriptText.Contains("$" + "script:Version = '0.1.0-dev'")) {
-            throw 'Unstamped development version remains in the published client.'
-          }
-
           Add-Type -AssemblyName System.IO.Compression
           $zip = [IO.Compression.ZipFile]::OpenRead($zipPath)
           try {
-            $entries = @($zip.Entries | Where-Object { $_.FullName -eq 'PSDynDNS.ps1' })
-            if ($entries.Count -ne 1) { throw 'Release ZIP must contain one PSDynDNS.ps1.' }
-            $stream = $entries[0].Open()
-            $buffer = New-Object IO.MemoryStream
-            try { $stream.CopyTo($buffer); $zippedBytes = $buffer.ToArray() }
-            finally { $stream.Dispose(); $buffer.Dispose() }
-            if ($zippedBytes.Length -ne $scriptBytes.Length -or
-                -not [Linq.Enumerable]::SequenceEqual(
-                    [byte[]]$zippedBytes, [byte[]]$scriptBytes
-                )) {
-                throw 'Client inside ZIP differs from the standalone release asset.'
+            $entry = @($zip.Entries | Where-Object { $_.FullName -eq 'PSDynDNS.ps1' })
+            if ($entry.Count -ne 1) { throw 'Release ZIP must include exactly one PSDynDNS.ps1.' }
+            $stream = $entry[0].Open()
+            $memory = New-Object IO.MemoryStream
+            try { $stream.CopyTo($memory); $zipBytes = $memory.ToArray() }
+            finally { $stream.Dispose(); $memory.Dispose() }
+            $assetBytes = [IO.File]::ReadAllBytes($client)
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try {
+              $assetHash = [Convert]::ToBase64String($sha.ComputeHash($assetBytes))
+              $zipHash = [Convert]::ToBase64String($sha.ComputeHash($zipBytes))
+            } finally { $sha.Dispose() }
+            if ($assetHash -ne $zipHash) {
+              throw 'Release ZIP contains different client bytes from standalone asset.'
             }
-          } finally {
-            $zip.Dispose()
-          }
-
-          $manifest = @(Get-Content -LiteralPath $checksumsPath -Encoding UTF8)
+          } finally { $zip.Dispose() }
+          $manifest = @(Get-Content -LiteralPath 'dist/SHA256SUMS.txt' -Encoding UTF8)
           foreach ($name in @('PSDynDNS.ps1','Install-PSDynDNS.ps1',"PSDynDNS-$tag.zip")) {
-            $actual = (Get-FileHash -LiteralPath (Join-Path $PWD "dist/$name") -Algorithm SHA256).Hash.ToLowerInvariant()
-            $line = "$actual  $name"
-            if (@($manifest | Where-Object { $_ -ceq $line }).Count -ne 1) {
-              throw "SHA256SUMS.txt does not match $name."
+            $actual = (Get-FileHash -LiteralPath (Join-Path 'dist' $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            if (@($manifest | Where-Object { $_ -ceq "$actual  $name" }).Count -ne 1) {
+              throw "SHA256SUMS.txt verification failed: $name."
             }
           }
-          Write-Host "Validated release version $expected, ZIP contents and SHA-256 sums."
+          Write-Host "Release artifact validated: $expected"
 
       - name: Publish release (create draft first)
         env:
