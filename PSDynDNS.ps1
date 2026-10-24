@@ -8,7 +8,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ConfigPath = (Join-Path $PSScriptRoot 'config.json'),
+    [string]$ConfigPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'config.json'),
     [switch]$ForceDnsUpdate
 )
 
@@ -227,7 +227,7 @@ try {
         $helperPath = $target + '.swap.ps1'
         [IO.File]::WriteAllText($helperPath, $helper, (New-Object Text.UTF8Encoding($false)))
         $exe = Join-Path $PSHOME 'powershell.exe'
-        $args = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ParentPid {1} -Original "{2}" -Staged "{3}" -Backup "{4}" -Digest "{5}"' -f $helperPath,$PID,$target,$newFile,$backup,$Release.Checksum
+        $args = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ParentPid {1} -Original "{2}" -Staged "{3}" -Backup "{4}" -Digest "{5}"' -f $helperPath,$PID,$target,$newFile,$backup,$Release.Sha256
         Start-Process -FilePath $exe -ArgumentList $args -WindowStyle Hidden | Out-Null
     } catch {
         Remove-Item -LiteralPath $newFile -Force -ErrorAction SilentlyContinue
@@ -319,7 +319,6 @@ function Invoke-Client {
 if ($MyInvocation.InvocationName -ne '.') {
     try { Invoke-Client -Path $ConfigPath -Force ([bool]$ForceDnsUpdate.IsPresent) }
     catch {
-        $message = $_.Exception.Message
         try {
             $root = Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))
             Write-ClientLog (Join-Path (Join-Path $root 'runtime') 'client.log') ERROR 'DynDNS run failed. See configuration and network.'
