@@ -3,7 +3,8 @@
 [![CI](https://github.com/MDI-GmbH/PSDynDNS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MDI-GmbH/PSDynDNS/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/MDI-GmbH/PSDynDNS?include_prereleases&label=release)](https://github.com/MDI-GmbH/PSDynDNS/releases)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![PowerShell 5.1](https://img.shields.io/badge/Windows%20PowerShell-5.1-5391FE)
+![Windows PowerShell 5.1](https://img.shields.io/badge/Windows%20PowerShell-5.1-5391FE)
+![PowerShell 7 tests](https://img.shields.io/badge/PowerShell%207-compatibility%20tests-5391FE)
 
 **Lightweight DynDNS2 client for Windows PowerShell 5.1.** Updates IPv4 and IPv6 DNS records when your public IP changes, using a Windows Scheduled Task and no external runtime modules.
 
@@ -41,16 +42,16 @@ Clone the repository and open **Windows PowerShell 5.1 as Administrator**.
 .\Install-PSDynDNS.ps1 -Install -Hostname host.example.org -LocalClientPath .\PSDynDNS.ps1
 ~~~
 
-The installer asks for the DynDNS secret interactively. Never include the secret in a command line or commit it to the repository. The default provider is `https://nsupdate.info/nic/update`; the scheduled interval defaults to 10 minutes.
+The installer asks for the DynDNS secret interactively. The scheduler interval is managed by the Windows Scheduled Task, not by the JSON configuration. Never include the secret in a command line or commit it to the repository. The default provider is `https://nsupdate.info/nic/update`; the scheduled interval defaults to 10 minutes.
 
 ### Configuration
 
 ~~~powershell
 # Enable dual-stack updates
-.\Install-PSDynDNS.ps1 -Configure -IPv4Enabled $true -IPv6Enabled $true
+.\Install-PSDynDNS.ps1 -IPv4Enabled $true -IPv6Enabled $true
 
 # Change hostname, provider URL and retry interval
-.\Install-PSDynDNS.ps1 -Configure -Hostname host.example.org -UpdateUrl 'https://nsupdate.info/nic/update' -IntervalMinutes 15
+.\Install-PSDynDNS.ps1 -Hostname host.example.org -UpdateUrl 'https://nsupdate.info/nic/update' -IntervalMinutes 15
 
 # Rotate the encrypted secret (interactive prompt)
 .\Install-PSDynDNS.ps1 -SetKey
@@ -72,7 +73,7 @@ The scheduled task runs the client automatically. For troubleshooting, the clien
 Configure the updater using the installer:
 
 ~~~powershell
-.\Install-PSDynDNS.ps1 -Configure -AutoUpdate $true -UpdateChannel beta -UpdateCheckHours 24
+.\Install-PSDynDNS.ps1 -AutoUpdate $true -UpdateChannel beta -UpdateCheckHours 24
 ~~~
 
 | Channel | Source | Intended use |
@@ -82,6 +83,58 @@ Configure the updater using the installer:
 | `main` | Current Git `main` commit | Development only |
 
 The updater validates downloads and verifies PowerShell syntax before staging a replacement. **Self-update and rollback are not yet approved for production.** Clients cannot anonymously update from the private repository; do not distribute personal access tokens to clients.
+
+## Command-line parameters
+
+Run the bootstrap installer from an **elevated Windows PowerShell 5.1** console. Existing installations are automatically reconfigured when setting arguments are supplied: `-Configure` is optional.
+
+| Parameter | Usage |
+| --- | --- |
+| `-Install` | Install a new instance (requires `-Hostname`). |
+| `-Hostname` | DynDNS hostname (required on first install). |
+| `-Username` | Optional provider username; defaults to hostname. |
+| `-UpdateUrl` | DynDNS2 HTTPS endpoint. |
+| `-IPv4Enabled`, `-IPv6Enabled` | Enable or disable individual IP families using `$true` or `$false`. |
+| `-IPv4CheckUrl`, `-IPv6CheckUrl` | HTTPS address discovery endpoints. |
+| `-IntervalMinutes` | Scheduled Task frequency, default 10 minutes. **Not stored in `config.json`**. |
+| `-AutoUpdate` | Enable or disable automatic software checks. |
+| `-UpdateChannel` | `stable`, `beta`, or `main`. |
+| `-UpdateCheckHours` | Hours between software checks (default 24). |
+| `-SetKey` | Prompt for a new provider secret. |
+| `-Repair` | Restore task and NTFS permissions without resetting credentials. |
+| `-ResetState` | Clear cached address and provider error state. |
+| `-Uninstall` / `-Purge` | Uninstall, optionally removing configuration and secret. |
+| `-LocalClientPath` | Install from a local copy of `PSDynDNS.ps1` (for development). |
+| `-CredentialSecret` | Optional `SecureString` for unattended setup; avoid plaintext secrets. |
+
+The installed client itself accepts only `-ConfigPath` and `-ForceDnsUpdate`. Administrative configuration happens through the bootstrap installer.
+
+### Run installer directly from a GitHub Release
+
+Once the repository is public, use this **download-and-verify** approach. It downloads the installer to a temporary local file and validates its SHA-256 digest from GitHub's release metadata before executing it. Avoid piping downloaded code to `Invoke-Expression`.
+
+~~~powershell
+# Stable: use 'stable'; preview: use 'beta'
+$channel = 'stable'
+$repo = 'MDI-GmbH/PSDynDNS'
+$headers = @{ 'User-Agent' = 'PSDynDNS-Bootstrap' }
+if ($channel -eq 'stable') {
+    $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers $headers
+} else {
+    $release = @(Invoke-RestMethod "https://api.github.com/repos/$repo/releases?per_page=100" -Headers $headers) |
+        Where-Object { $_.prerelease -and -not $_.draft } | Sort-Object published_at -Descending | Select-Object -First 1
+}
+if (-not $release) { throw 'No suitable published release found.' }
+$asset = @($release.assets | Where-Object name -eq 'Install-PSDynDNS.ps1') | Select-Object -First 1
+if (-not $asset -or $asset.digest -notmatch '^sha256:([a-fA-F0-9]{64})$') { throw 'Missing installer SHA-256 digest.' }
+$expected = $Matches[1]
+$installer = Join-Path $env:TEMP 'Install-PSDynDNS.ps1'
+Invoke-WebRequest $asset.browser_download_url -OutFile $installer -UseBasicParsing
+if ((Get-FileHash $installer -Algorithm SHA256).Hash -ne $expected) { throw 'Download integrity check failed.' }
+& $installer -Install -Hostname 'host.example.org'
+~~~
+
+Set `$channel = 'beta'` to get the most recently **published pre-release**. For a productive installation, first inspect the downloaded script and its release notes. The example runs only on systems where you have already explicitly chosen to trust this repository.
 
 ## Installation layout
 
@@ -101,7 +154,7 @@ The task identity may write to `app` and `runtime`, but should only read `config
 ## Development and releases
 
 - **Development:** `dev` branch; merge into `main` via reviewed pull requests.
-- **CI:** [PowerShell CI](.github/workflows/ci.yml) runs syntax checks, Pester tests and real Windows installation integration tests. New PR commits cancel older in-progress CI runs for the same PR.
+- **CI:** [PowerShell CI](.github/workflows/ci.yml) runs syntax checks and Pester under Windows PowerShell 5.1, compatibility tests under PowerShell 7, and real Windows installation integration tests. New PR commits cancel older in-progress CI runs for the same PR.
 - **Build:** Successful tests on `main` produce a ZIP and checksums.
 - **Publishing:** Manually start [Publish Release](.github/workflows/release.yml) on `main`, specify e.g. `0.2.0` (stable) or `0.3.0-beta.1` (pre-release). The release workflow runs tests and prepares assets and automatically generated notes before publication.
 
