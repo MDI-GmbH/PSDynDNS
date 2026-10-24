@@ -145,6 +145,7 @@ $canWriteRuntime = $false
 $canWriteApp = $false
 $canWriteConfig = $false
 $canWriteSecret = $false
+$canSwapProtectedClient = $false
 try {
     $path = Join-Path $runtime 'service-probe.tmp'
     [IO.File]::WriteAllText($path,'ok')
@@ -167,7 +168,19 @@ try {
     $stream.Dispose()
     $canWriteSecret = $true
 } catch {}
+# Verify the production replacement moves under the actual task identity.
+$fixture = Join-Path $PSScriptRoot 'CI-ACL-Original.ps1'
+$stage = $fixture + '.new'
+$backup = $fixture + '.bak'
+try {
+    Move-Item -LiteralPath $fixture -Destination $backup -ErrorAction Stop
+    Move-Item -LiteralPath $stage -Destination $fixture -ErrorAction Stop
+    $canSwapProtectedClient = $true
+} catch {
+    Write-Host ('ACL swap probe rejected: ' + $_.Exception.Message)
+}
 $result = [pscustomobject]@{
+    CanSwapProtectedClient=$canSwapProtectedClient
     CanReadConfigAndDpapi=$canRead
     CanWriteRuntime=$canWriteRuntime
     CanWriteApp=$canWriteApp
@@ -177,7 +190,13 @@ $result = [pscustomobject]@{
 }
 $result | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $runtime 'service-probe.json') -Encoding UTF8
 '@
-            $probeFile = Join-Path (Join-Path $script:InstallRoot 'app') 'CI-LocalService-Probe.ps1'
+            $appRoot = Join-Path $script:InstallRoot 'app'
+            $fixture = Join-Path $appRoot 'CI-ACL-Original.ps1'
+            $stage = $fixture + '.new'
+            Copy-Item -LiteralPath (Join-Path $appRoot 'PSDynDNS.ps1') -Destination $fixture -Force
+            Set-Acl -LiteralPath $fixture -AclObject (Get-Acl -LiteralPath (Join-Path $appRoot 'PSDynDNS.ps1'))
+            [IO.File]::WriteAllText($stage, 'Write-Host "staged"')
+            $probeFile = Join-Path $appRoot 'CI-LocalService-Probe.ps1'
             [IO.File]::WriteAllText($probeFile,$sourceCode,(New-Object Text.UTF8Encoding($false)))
             $powershell = (Get-ScheduledTask -TaskName $script:TaskName).Actions[0].Execute
             # An encoded launcher writes a marker outside PSDynDNS before touching app ACLs.
@@ -283,6 +302,7 @@ try {
             Assert-True $probe.CanReadConfigAndDpapi 'LOCAL SERVICE task can read config and decrypt DPAPI secret'
             Assert-True $probe.CanWriteRuntime 'Task can modify runtime directory'
             Assert-True $probe.CanWriteApp 'Task can modify app directory for updates'
+            Assert-True $probe.CanSwapProtectedClient 'LOCAL SERVICE can replace protected script under installed ACLs'
             Assert-True (-not $probe.CanWriteConfig) 'Task cannot modify configuration'
             Assert-True (-not $probe.CanWriteSecret) 'Task cannot modify secret'
 
