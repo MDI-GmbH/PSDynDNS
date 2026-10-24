@@ -40,3 +40,45 @@ Describe 'PSDynDNS DynDNS2 protocol' {
         { Read-ClientConfig $path } | Should -Throw
     }
 }
+
+Describe 'IP address validation' {
+    It 'accepts global IPv4 and IPv6 candidates' {
+        Test-PublicIp ([Net.IPAddress]::Parse('8.8.8.8')) | Should -BeTrue
+        Test-PublicIp ([Net.IPAddress]::Parse('2606:4700:4700::1111')) | Should -BeTrue
+    }
+    It 'rejects non-public IP addresses' {
+        foreach ($address in @('10.0.0.1','172.16.0.1','192.168.1.1','127.0.0.1','169.254.1.1','100.64.0.1','192.0.2.1','198.51.100.1','203.0.113.1','fe80::1','fc00::1','::1')) {
+            Test-PublicIp ([Net.IPAddress]::Parse($address)) | Should -BeFalse
+        }
+    }
+}
+Describe 'State persistence' {
+    It 'creates a state with optional update timestamp' {
+        $state = Read-ClientState (Join-Path $TestDrive 'missing.json')
+        $state.LastUpdateCheckUtc | Should -BeNullOrEmpty
+    }
+    It 'round-trips state in runtime' {
+        $path = Join-Path $TestDrive 'state.json'
+        $state = Read-ClientState $path
+        $state.LastIPv4 = '8.8.8.8'
+        Save-ClientState $path $state
+        (Read-ClientState $path).LastIPv4 | Should -Be '8.8.8.8'
+    }
+    It 'rejects invalid state instead of silently updating' {
+        $path = Join-Path $TestDrive 'invalid.json'
+        '{corrupt' | Set-Content $path
+        { Read-ClientState $path } | Should -Throw
+    }
+}
+Describe 'Release response handling' {
+    It 'never reports unknown tokens as success' {
+        Get-ResponseCategory 'mystery 8.8.8.8' | Should -Be 'unknown'
+    }
+    It 'does not schedule an update when disabled' {
+        $state = New-Object psobject -Property @{ LastUpdateCheckUtc = $null }
+        $config = New-Object psobject -Property @{ AutoUpdate = $false; UpdateCheckHours = 24 }
+        Mock Get-LatestRelease { throw 'Should not be called' }
+        Invoke-SoftwareUpdate $config $state (Join-Path $TestDrive 's.json') (Join-Path $TestDrive 'x.log')
+        Should -Invoke Get-LatestRelease -Times 0
+    }
+}
