@@ -168,7 +168,7 @@ jobs:
           if ($matchingLines.Count -ne 1 -or $matchingLines[0] -cne $expectedLine) {
             throw "Release asset version must be exactly $expected."
           }
-          Add-Type -AssemblyName System.IO.Compression
+          Add-Type -AssemblyName System.IO.Compression.ZipFile
           $zip = [IO.Compression.ZipFile]::OpenRead($zipPath)
           try {
             $entry = @($zip.Entries | Where-Object { $_.FullName -eq 'PSDynDNS.ps1' })
