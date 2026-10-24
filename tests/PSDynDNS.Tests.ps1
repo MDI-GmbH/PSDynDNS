@@ -129,3 +129,27 @@ Describe 'Locale-independent persisted timestamps and fingerprints' {
         }
     }
 }
+
+Describe 'Sanitized actionable diagnostics' {
+    It 'shows the exception type and useful cause' {
+        try { throw [System.InvalidOperationException]::new('Simulated TLS handshake failure') }
+        catch { $message = Format-ClientFailure -ErrorRecord $_ }
+        $message | Should -Match 'InvalidOperationException'
+        $message | Should -Match 'TLS handshake failure'
+    }
+    It 'redacts the credential, authorization token, and request URL' {
+        $secret = 'ci-sensitive-password'
+        try { throw ('Request failed https://example.org/nic/update?key=abc Authorization: Basic dXNlcjpwYXNz password=' + $secret) }
+        catch { $message = Format-ClientFailure -ErrorRecord $_ -Secret $secret }
+        $message | Should -Not -Match ([regex]::Escape($secret))
+        $message | Should -Not -Match 'dXNlcjpwYXNz'
+        $message | Should -Not -Match 'key=abc'
+        $message | Should -Match '\[REDACTED\]'
+    }
+    It 'collapses multi-line exception messages' {
+        try { throw "Line one`nLine two" }
+        catch { $message = Format-ClientFailure -ErrorRecord $_ }
+        $message | Should -Not -Match "`n"
+        $message | Should -Match 'Line one Line two'
+    }
+}
