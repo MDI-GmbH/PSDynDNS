@@ -108,7 +108,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $pesterConfig = New-PesterConfiguration
-          $pesterConfig.Run.Path = @('./tests/Integration.Windows.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1')
+          $pesterConfig.Run.Path = @('./tests/PSDynDNS.Tests.ps1','./tests/PSDynDNS.Behavior.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1','./tests/Integration.Windows.Tests.ps1')
           $pesterConfig.Run.PassThru = $true
           $pesterConfig.Output.Verbosity = 'Detailed'
           $result = Invoke-Pester -Configuration $pesterConfig
@@ -136,7 +136,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $pesterConfig = New-PesterConfiguration
-          $pesterConfig.Run.Path = @('./tests/Integration.Windows.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1')
+          $pesterConfig.Run.Path = @('./tests/PSDynDNS.Tests.ps1','./tests/PSDynDNS.Behavior.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1','./tests/Integration.Windows.Tests.ps1')
           $pesterConfig.Run.PassThru = $true
           $pesterConfig.Output.Verbosity = 'Detailed'
           $result = Invoke-Pester -Configuration $pesterConfig
