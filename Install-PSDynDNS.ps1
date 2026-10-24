@@ -41,10 +41,10 @@ function Assert-Admin {
     }
 }
 function Assert-Url {
-    param([string]$Value)
+    param([string]$Value, [string]$Name='URL')
     $uri = $null
     if (-not [uri]::TryCreate($Value,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or $uri.UserInfo) {
-        throw 'URLs must use HTTPS without embedded credentials.'
+        throw ('Invalid HTTPS setting: ' + $Name + '. Expected absolute HTTPS URL without embedded credentials.')
     }
 }
 function Set-ProtectedAcl {
@@ -100,7 +100,7 @@ function Save-Settings {
     param($Cfg)
     if (-not $Cfg.Hostname -or [string]$Cfg.Hostname -notmatch '^[A-Za-z0-9.-]+[.][A-Za-z0-9.-]+$') { throw 'A valid FQDN is required.' }
     if (-not $Cfg.IPv4Enabled -and -not $Cfg.IPv6Enabled) { throw 'Enable at least one IP family.' }
-    foreach ($entry in @('UpdateUrl','IPv4CheckUrl','IPv6CheckUrl')) { Assert-Url ([string]$Cfg.$entry) }
+    foreach ($entry in @('UpdateUrl','IPv4CheckUrl','IPv6CheckUrl')) { Assert-Url -Value ([string]$Cfg.$entry) -Name $entry }
     if ($Cfg.IntervalMinutes -lt 1 -or $Cfg.IntervalMinutes -gt 1440) { throw 'IntervalMinutes must be 1..1440.' }
     if ($Cfg.UpdateCheckHours -lt 1) { throw 'UpdateCheckHours must be positive.' }
     if (-not $Cfg.PSObject.Properties['UpdateChannel']) { $Cfg | Add-Member -NotePropertyName UpdateChannel -NotePropertyValue 'stable' }
