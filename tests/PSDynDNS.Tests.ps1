@@ -77,9 +77,9 @@ Describe 'Release response handling' {
     It 'does not schedule an update when disabled' {
         $state = New-Object psobject -Property @{ LastUpdateCheckUtc = $null }
         $config = New-Object psobject -Property @{ AutoUpdate = $false; UpdateCheckHours = 24 }
-        Mock Get-LatestRelease { throw 'Should not be called' }
+        Mock Get-UpdateCandidate { throw 'Should not be called' }
         Invoke-SoftwareUpdate $config $state (Join-Path $TestDrive 's.json') (Join-Path $TestDrive 'x.log')
-        Should -Invoke Get-LatestRelease -Times 0
+        Should -Invoke Get-UpdateCandidate -Times 0
     }
 }
 
