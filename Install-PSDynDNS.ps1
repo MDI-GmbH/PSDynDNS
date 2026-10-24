@@ -67,6 +67,17 @@ function Set-ProtectedAcl {
     Set-Acl -LiteralPath $Path -AclObject $acl
 }
 function Get-TaskSid {
+    # Prefer Windows' authoritative task account mapping once registration exists.
+    # The deterministic SHA-1 fallback is only used during initial bootstrap.
+    $existing = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
+    if ($existing) {
+        try {
+            $ntAccount = New-Object Security.Principal.NTAccount('NT TASK', $script:TaskName)
+            return $ntAccount.Translate([Security.Principal.SecurityIdentifier]).Value
+        } catch {
+            throw 'Cannot resolve NT TASK account to a real SID; refusing to set potentially incorrect ACLs.'
+        }
+    }
     # Task SIDs are derived from the uppercased full task path using SHA-1.
     $taskPath = '\' + $script:TaskName.ToUpperInvariant()
     $sha = [Security.Cryptography.SHA1]::Create()
@@ -193,6 +204,11 @@ switch ($PSCmdlet.ParameterSetName) {
         Save-Settings $cfg
         Save-Secret
         Install-Task ([int]$cfg.IntervalMinutes)
+        # Reapply permissions using Windows' registered NT TASK SID, not just the pre-registration hash.
+        Ensure-Directories
+        Set-ProtectedAcl (Join-Path $script:App 'PSDynDNS.ps1') -ClientRead
+        Set-ProtectedAcl $script:ConfigPath -ClientRead
+        Set-ProtectedAcl (Join-Path $script:Root 'secret.dpapi') -ClientRead
         Write-Host 'PSDynDNS installed.'
     }
     Configure {
@@ -213,6 +229,10 @@ switch ($PSCmdlet.ParameterSetName) {
         if (-not (Test-Path -LiteralPath $client)) { Install-ClientFile $LocalClientPath }
         else { Set-ProtectedAcl $client -ClientRead }
         Install-Task ([int]$cfg.IntervalMinutes)
+        Ensure-Directories
+        Set-ProtectedAcl $client -ClientRead
+        Set-ProtectedAcl $script:ConfigPath -ClientRead
+        Set-ProtectedAcl (Join-Path $script:Root 'secret.dpapi') -ClientRead
         Write-Host 'PSDynDNS repaired.'
     }
     SetKey {
