@@ -58,7 +58,9 @@ Describe 'PSDynDNS installation, task isolation and lifecycle' -Tag 'Integration
                     if ($i + 1 -ge $Arguments.Count) { throw "Missing value for $token" }
                     $i++
                     $value = $Arguments[$i]
-                    if ($name -in @('IPv4Enabled','IPv6Enabled','AutoUpdate')) { $value = [bool]::Parse($value) }
+                    if ($name -in @('IPv4Enabled','IPv6Enabled','AutoUpdate','AllowAutomaticConfigUpdates')) {
+                        $value = [bool]::Parse($value)
+                    }
                     elseif ($name -in @('IntervalMinutes','UpdateCheckHours')) { $value = [int]::Parse($value) }
                     $params[$name] = $value
                 }
