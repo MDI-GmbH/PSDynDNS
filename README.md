@@ -103,7 +103,17 @@ Run the bootstrap installer from an **elevated Windows PowerShell 5.1 or PowerSh
 | `-LocalClientPath` | Install from a local copy of `PSDynDNS.ps1` (for development). |
 | `-CredentialSecret` | Optional `SecureString` for unattended setup; avoid plaintext secrets. |
 
-The installed client itself accepts only `-ConfigPath` and `-ForceDnsUpdate`. `-ForceDnsUpdate` sends a DynDNS request even if DNS already matches; avoid frequent forced calls. Administrative configuration happens through the bootstrap installer.
+The installed client accepts `-ConfigPath`, `-ForceDnsUpdate`, and `-ForceUpgrade`.
+A forced software update uses the configured `UpdateChannel` regardless of `AutoUpdate` or the normal check interval. An optional `-UpgradeChannel` selects `stable`, `beta`, or `main` for this run only; it does not change the saved configuration.
+
+~~~powershell
+& 'C:\ProgramData\PSDynDNS\app\PSDynDNS.ps1' -ForceUpgrade -Verbose
+& 'C:\ProgramData\PSDynDNS\app\PSDynDNS.ps1' -ForceUpgrade -UpgradeChannel beta -Verbose
+~~~
+
+The requested version is verified and staged; a separate helper swaps the script after the current process exits. The command does not update DNS records. It may reinstall the selected channel's version even if already installed. Avoid running the installed client elevated.
+
+The `-ForceDnsUpdate` switch sends a DynDNS request even if DNS already matches; avoid frequent forced calls. Administrative configuration happens through the bootstrap installer.
 
 At each scheduled run the client discovers its public IP addresses and queries the configured DNS resolvers for the hostname's A and/or AAAA records. It updates the provider if DNS differs, even if the public address has not changed since the previous run. Identical records cause a local skip (not a provider `nochg` response). DNS timeouts and conflicting resolver answers fail closed; missing records are treated as drift. Public recursive resolvers may return cached values until TTL expiry; the client throttles identical post-update stale responses to avoid excess provider requests.
 
