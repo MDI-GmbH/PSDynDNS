@@ -217,23 +217,32 @@ function Get-ResponseCategory {
 
 function Read-ClientState {
     param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) { return [pscustomobject]@{ LastIPv4=$null; LastIPv6=$null; Fingerprint=$null; BlockedReason=$null; RetryAfterUtc=$null; LastUpdateCheckUtc=$null } }
-    try { $state = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
-        foreach ($property in @('LastIPv4','LastIPv6','Fingerprint','BlockedReason','RetryAfterUtc','LastUpdateCheckUtc')) {
-            if (-not ($state.PSObject.Properties.Name -contains $property)) { $state | Add-Member -NotePropertyName $property -NotePropertyValue $null }
-        }
-        return $state }
-    catch { throw 'State file is corrupted; manual recovery is required.' }
+    $fields = @('LastIPv4','LastIPv6','Fingerprint','BlockedReason','RetryAfterUtc','LastUpdateCheckUtc','LastUpdateAttemptUtc')
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        $empty = [pscustomobject]@{}
+        foreach ($field in $fields) { Add-Member -InputObject $empty -NotePropertyName $field -NotePropertyValue $null }
+        return $empty
+    }
+    try { $json = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop }
+    catch { throw ('Cannot read state.json: ' + $_.Exception.Message) }
+    try { $state = ConvertFrom-Json -InputObject $json -ErrorAction Stop }
+    catch { throw ('Invalid JSON in state.json; back up the file before using -ResetState: ' + $_.Exception.Message) }
+    if ($null -eq $state -or $state -isnot [pscustomobject]) { throw 'state.json must contain a JSON object.' }
+    foreach ($field in $fields) {
+        if ($null -eq $state.PSObject.Properties[$field]) { Add-Member -InputObject $state -NotePropertyName $field -NotePropertyValue $null }
+    }
+    return $state
 }
-
 function Save-ClientState {
-    param([string]$Path, $State)
-    $temporary = $Path + '.tmp'
+    param([string]$Path,$State)
+    $target = [IO.Path]::GetFullPath($Path)
+    $temporary = $target + '.tmp'
+    $backup = $target + '.bak'
     $State | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $temporary -Encoding UTF8
-    if (Test-Path -LiteralPath $Path) {
-        [IO.File]::Replace($temporary, $Path, $null)
+    if (Test-Path -LiteralPath $target -PathType Leaf) {
+        [IO.File]::Replace($temporary,$target,$backup)
     } else {
-        [IO.File]::Move($temporary, $Path)
+        [IO.File]::Move($temporary,$target)
     }
 }
 
@@ -373,19 +382,24 @@ function Invoke-SoftwareUpdate {
     if ($State.LastUpdateCheckUtc) {
         try { if ($now -lt (ConvertFrom-UtcTimestamp $State.LastUpdateCheckUtc).AddHours([int]$Config.UpdateCheckHours)) { return } } catch {}
     }
-    $State.LastUpdateCheckUtc = $now.ToString('o')
+    if ($State.LastUpdateAttemptUtc) {
+        try { if ($now -lt (ConvertFrom-UtcTimestamp $State.LastUpdateAttemptUtc).AddMinutes(30)) { return } } catch {}
+    }
+    $State.LastUpdateAttemptUtc = $now.ToString('o')
     Save-ClientState $StatePath $State
     try {
-        $channel = if ($Config.PSObject.Properties['UpdateChannel'] -and $Config.UpdateChannel) { [string]$Config.UpdateChannel } else { 'stable' }
+        $channel = if ($null -ne $Config.PSObject.Properties['UpdateChannel'] -and $Config.UpdateChannel) { [string]$Config.UpdateChannel } else { 'stable' }
         if ($channel -notin @('stable','beta','main')) { throw 'Invalid UpdateChannel.' }
         $release = Get-UpdateCandidate $channel
+        $State.LastUpdateCheckUtc = [datetime]::UtcNow.ToString('o')
+        Save-ClientState $StatePath $State
         if ($channel -eq 'main') {
             if ((Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant() -eq $release.Sha256) { return }
         } elseif (-not (Test-CandidateNewer $release)) { return }
         Start-SelfUpdate $release
         Write-ClientLog $LogPath INFO 'Verified software update staged; pending process exit.'
     } catch {
-        Write-ClientLog $LogPath WARN ('Software update check failed; current script retained. ' + (Format-ClientFailure -ErrorRecord $_))
+        Write-ClientLog $LogPath WARN ('Software update check failed; retry possible after 30 minutes. ' + (Format-ClientFailure -ErrorRecord $_))
     }
 }
 
@@ -443,6 +457,7 @@ function Invoke-Client {
         $response = Invoke-DynDnsRequest $config $secret ($addresses -join ',')
         $code = ($response -split '\s+')[0]
         $category = Get-ResponseCategory $response
+    Write-Verbose ('DynDNS provider response: ' + $code)
     Write-Verbose ('DynDNS provider response: ' + $code)
         $newState = [ordered]@{
             Fingerprint = $fingerprint
