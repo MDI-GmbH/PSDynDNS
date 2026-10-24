@@ -134,6 +134,25 @@ function Write-ClientLog {
     Add-Content -LiteralPath $Path -Value $line -Encoding UTF8
 }
 
+function Format-ClientFailure {
+    param([System.Management.Automation.ErrorRecord]$ErrorRecord, [string]$Secret)
+    # Include the exception type and message, but never an HTTP header,
+    # URL (which could carry query credentials), or the actual DynDNS secret.
+    $message = [string]$ErrorRecord.Exception.Message
+    if ([string]::IsNullOrWhiteSpace($message)) { $message = 'No error details available.' }
+    if (-not [string]::IsNullOrEmpty($Secret)) {
+        $message = $message.Replace($Secret, '[REDACTED]')
+        $escapedSecret = [uri]::EscapeDataString($Secret)
+        if ($escapedSecret -ne $Secret) { $message = $message.Replace($escapedSecret, '[REDACTED]') }
+    }
+    $message = [regex]::Replace($message, '(?i)\bBasic\s+[A-Za-z0-9+/=]+', 'Basic [REDACTED]')
+    $message = [regex]::Replace($message, '(?i)\b(authorization|password|secret|token|api[-_]?key)\s*[:=]\s*[^\s&,;]+', '$1=[REDACTED]')
+    $message = [regex]::Replace($message, "(?i)https?://[^\s'""<>]+", '[URL REDACTED]')
+    $message = [regex]::Replace($message, '[\r\n\t]+', ' ').Trim()
+    if ($message.Length -gt 800) { $message = $message.Substring(0,800) + '...' }
+    return ('{0}: {1}' -f $ErrorRecord.Exception.GetType().Name, $message)
+}
+
 function Test-PublicIp {
     param([Net.IPAddress]$Address)
     if ([Net.IPAddress]::IsLoopback($Address) -or $Address.Equals([Net.IPAddress]::Any) -or $Address.Equals([Net.IPAddress]::IPv6Any)) { return $false }
@@ -272,77 +291,107 @@ function Invoke-SoftwareUpdate {
         Start-SelfUpdate $release
         Write-ClientLog $LogPath INFO 'Verified software update staged; pending process exit.'
     } catch {
-        Write-ClientLog $LogPath WARN 'Software update check or installation failed; current script retained.'
+        Write-ClientLog $LogPath WARN ('Software update check failed; current script retained. ' + (Format-ClientFailure -ErrorRecord $_))
     }
 }
 
 function Invoke-Client {
     param([string]$Path, [bool]$Force)
-    $fullPath = [IO.Path]::GetFullPath($Path)
-    $root = Split-Path -Parent $fullPath
-    $runtime = Join-Path $root 'runtime'
-    $logPath = Join-Path $runtime 'client.log'
-    $config = Read-ClientConfig $fullPath
-    $statePath = Join-Path $runtime 'state.json'
-    $state = Read-ClientState $statePath
-    $now = (Get-Date).ToUniversalTime()
-    $fingerprint = Get-ConfigurationFingerprint $config
-    if ($state.BlockedReason -and $state.Fingerprint -eq $fingerprint -and -not $Force) {
-        Invoke-SoftwareUpdate $config $state $statePath $logPath
-        return
-    }
-    if ($state.RetryAfterUtc -and $state.Fingerprint -eq $fingerprint -and $now -lt (ConvertFrom-UtcTimestamp $state.RetryAfterUtc) -and -not $Force) { Invoke-SoftwareUpdate $config $state $statePath $logPath; return }
-    $ipv4 = $null
-    $ipv6 = $null
-    if ($config.IPv4Enabled) { $ipv4 = Get-PublicAddress ([string]$config.IPv4CheckUrl) ([Net.Sockets.AddressFamily]::InterNetwork) }
-    if ($config.IPv6Enabled) { $ipv6 = Get-PublicAddress ([string]$config.IPv6CheckUrl) ([Net.Sockets.AddressFamily]::InterNetworkV6) }
-    if (-not $Force -and $state.Fingerprint -eq $fingerprint -and $state.LastIPv4 -eq $ipv4 -and $state.LastIPv6 -eq $ipv6) { Invoke-SoftwareUpdate $config $state $statePath $logPath; return }
-    $secret = Read-MachineSecret (Join-Path $root 'secret.dpapi')
-    $addresses = @($ipv4,$ipv6) | Where-Object { $_ }
-    $response = Invoke-DynDnsRequest $config $secret ($addresses -join ',')
-    $code = ($response -split '\s+')[0]
-    $category = Get-ResponseCategory $response
-    $newState = [ordered]@{
-        Fingerprint = $fingerprint
-        LastIPv4 = $state.LastIPv4
-        LastIPv6 = $state.LastIPv6
-        BlockedReason = $null
-        RetryAfterUtc = $null
-        LastUpdateCheckUtc = $state.LastUpdateCheckUtc
-    }
-    switch ($category) {
-        success {
-            $newState.LastIPv4 = $ipv4
-            $newState.LastIPv6 = $ipv6
-            Write-ClientLog $logPath INFO "DynDNS update succeeded: $code"
+    $phase = 'initialize'
+    $secret = $null
+    $logPath = $null
+    try {
+        $phase = 'resolve configuration path'
+        $fullPath = [IO.Path]::GetFullPath($Path)
+        $root = Split-Path -Parent $fullPath
+        $runtime = Join-Path $root 'runtime'
+        $logPath = Join-Path $runtime 'client.log'
+        $phase = 'read configuration'
+        Write-Verbose 'Reading DynDNS configuration.'
+        $config = Read-ClientConfig $fullPath
+        $statePath = Join-Path $runtime 'state.json'
+        $phase = 'read state'
+        $state = Read-ClientState $statePath
+        $now = (Get-Date).ToUniversalTime()
+        $fingerprint = Get-ConfigurationFingerprint $config
+        if ($state.BlockedReason -and $state.Fingerprint -eq $fingerprint -and -not $Force) {
+            Write-Verbose ('DynDNS update suppressed: provider previously blocked the configuration (' + [string]$state.BlockedReason + ').')
+            Invoke-SoftwareUpdate $config $state $statePath $logPath
+            return
         }
-        blocked {
-            $newState.BlockedReason = $code
-            $newState.Fingerprint = $fingerprint
-            Write-ClientLog $logPath ERROR "DynDNS update blocked: $code"
+        if ($state.RetryAfterUtc -and $state.Fingerprint -eq $fingerprint -and $now -lt (ConvertFrom-UtcTimestamp $state.RetryAfterUtc) -and -not $Force) { Invoke-SoftwareUpdate $config $state $statePath $logPath; return }
+        $ipv4 = $null
+        $ipv6 = $null
+        if ($config.IPv4Enabled) {
+            $phase = 'discover IPv4 address'
+            Write-Verbose 'Checking public IPv4 address.'
+            $ipv4 = Get-PublicAddress ([string]$config.IPv4CheckUrl) ([Net.Sockets.AddressFamily]::InterNetwork)
         }
-        retry {
-            $newState.Fingerprint = $fingerprint
-            $newState.RetryAfterUtc = $now.AddMinutes(30).ToString('o')
-            Write-ClientLog $logPath WARN "DynDNS provider requested retry: $code"
+        if ($config.IPv6Enabled) {
+            $phase = 'discover IPv6 address'
+            Write-Verbose 'Checking public IPv6 address.'
+            $ipv6 = Get-PublicAddress ([string]$config.IPv6CheckUrl) ([Net.Sockets.AddressFamily]::InterNetworkV6)
         }
+        if (-not $Force -and $state.Fingerprint -eq $fingerprint -and $state.LastIPv4 -eq $ipv4 -and $state.LastIPv6 -eq $ipv6) { Invoke-SoftwareUpdate $config $state $statePath $logPath; return }
+        $phase = 'read DPAPI credential'
+        Write-Verbose 'Decrypting machine-protected DynDNS credential.'
+        $secret = Read-MachineSecret (Join-Path $root 'secret.dpapi')
+        $addresses = @($ipv4,$ipv6) | Where-Object { $_ }
+        $phase = 'send DynDNS2 HTTPS request'
+        Write-Verbose 'Sending authenticated DynDNS2 update.'
+        $response = Invoke-DynDnsRequest $config $secret ($addresses -join ',')
+        $code = ($response -split '\s+')[0]
+        $category = Get-ResponseCategory $response
+        $newState = [ordered]@{
+            Fingerprint = $fingerprint
+            LastIPv4 = $state.LastIPv4
+            LastIPv6 = $state.LastIPv6
+            BlockedReason = $null
+            RetryAfterUtc = $null
+            LastUpdateCheckUtc = $state.LastUpdateCheckUtc
+        }
+        switch ($category) {
+            success {
+                $newState.LastIPv4 = $ipv4
+                $newState.LastIPv6 = $ipv6
+                Write-ClientLog $logPath INFO "DynDNS update succeeded: $code"
+            }
+            blocked {
+                $newState.BlockedReason = $code
+                $newState.Fingerprint = $fingerprint
+                Write-ClientLog $logPath ERROR "DynDNS update blocked: $code"
+            }
+            retry {
+                $newState.Fingerprint = $fingerprint
+                $newState.RetryAfterUtc = $now.AddMinutes(30).ToString('o')
+                Write-ClientLog $logPath WARN "DynDNS provider requested retry: $code"
+            }
+        }
+        if ($category -eq 'unknown') {
+            throw 'Unrecognized DynDNS2 provider response.'
+        }
+        $phase = 'save state'
+        Save-ClientState $statePath $newState
+        $phase = 'check for software updates'
+        Invoke-SoftwareUpdate $config $newState $statePath $logPath
+    } catch {
+        $diagnostic = 'DynDNS failed during ' + $phase + ': ' + (Format-ClientFailure -ErrorRecord $_ -Secret $secret)
+        if ($logPath) {
+            try { Write-ClientLog $logPath ERROR $diagnostic }
+            catch { Write-Warning 'Could not write diagnostic details to client.log.' }
+        }
+        throw $diagnostic
+    } finally {
+        $secret = $null
     }
-    if ($category -eq 'unknown') {
-        throw 'Unrecognized DynDNS2 provider response.'
-    }
-    Save-ClientState $statePath $newState
-    Invoke-SoftwareUpdate $config $newState $statePath $logPath
 }
-
 # Dot-source is deliberately supported for tests; direct invocation runs the client.
 if ($MyInvocation.InvocationName -ne '.') {
     try { Invoke-Client -Path $ConfigPath -Force ([bool]$ForceDnsUpdate.IsPresent) }
     catch {
-        try {
-            $root = Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))
-            Write-ClientLog (Join-Path (Join-Path $root 'runtime') 'client.log') ERROR 'DynDNS run failed. See configuration and network.'
-        } catch { }
-        Write-Error 'DynDNS run failed; see client.log.'
+        # Invoke-Client already logged the sanitized, phase-specific cause.
+        # Preserve that cause on the console instead of hiding it.
+        Write-Error $_.Exception.Message
         exit 1
     }
 }
