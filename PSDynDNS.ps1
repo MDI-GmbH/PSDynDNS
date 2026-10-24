@@ -227,15 +227,15 @@ function Invoke-Client {
     $now = (Get-Date).ToUniversalTime()
     $fingerprint = Get-ConfigurationFingerprint $config
     if ($state.BlockedReason -and $state.Fingerprint -eq $fingerprint -and -not $Force) {
-        Write-ClientLog $logPath WARN 'Update blocked; administrator must correct issue and reset state.'
+        Invoke-SoftwareUpdate $config $state $statePath $logPath
         return
     }
-    if ($state.RetryAfterUtc -and $state.Fingerprint -eq $fingerprint -and $now -lt [datetime]$state.RetryAfterUtc -and -not $Force) { return }
+    if ($state.RetryAfterUtc -and $state.Fingerprint -eq $fingerprint -and $now -lt [datetime]$state.RetryAfterUtc -and -not $Force) { Invoke-SoftwareUpdate $config $state $statePath $logPath; return }
     $ipv4 = $null
     $ipv6 = $null
     if ($config.IPv4Enabled) { $ipv4 = Get-PublicAddress ([string]$config.IPv4CheckUrl) ([Net.Sockets.AddressFamily]::InterNetwork) }
     if ($config.IPv6Enabled) { $ipv6 = Get-PublicAddress ([string]$config.IPv6CheckUrl) ([Net.Sockets.AddressFamily]::InterNetworkV6) }
-    if (-not $Force -and $state.Fingerprint -eq $fingerprint -and $state.LastIPv4 -eq $ipv4 -and $state.LastIPv6 -eq $ipv6) { return }
+    if (-not $Force -and $state.Fingerprint -eq $fingerprint -and $state.LastIPv4 -eq $ipv4 -and $state.LastIPv6 -eq $ipv6) { Invoke-SoftwareUpdate $config $state $statePath $logPath; return }
     $secret = Read-MachineSecret (Join-Path $root 'secret.dpapi')
     $addresses = @($ipv4,$ipv6) | Where-Object { $_ }
     $response = Invoke-DynDnsRequest $config $secret ($addresses -join ',')
@@ -270,6 +270,7 @@ function Invoke-Client {
         throw 'Unrecognized DynDNS2 provider response.'
     }
     Save-ClientState $statePath $newState
+    Invoke-SoftwareUpdate $config $newState $statePath $logPath
 }
 
 # Dot-source is deliberately supported for tests; direct invocation runs the client.
