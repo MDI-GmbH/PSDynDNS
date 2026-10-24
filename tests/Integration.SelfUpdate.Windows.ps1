@@ -150,6 +150,11 @@ function Move-Item {
     Assert-Ci (Test-Path -LiteralPath $original -PathType Leaf) 'Rollback restores original file'
     Assert-Ci ((Hash-Ci $original) -eq $originalHash) 'Rollback restores original bytes'
     Assert-Ci (-not (Test-Path -LiteralPath $backup)) 'Rollback consumes temporary backup'
+    # The injected rollback failure is expected and already asserted above.
+    # GitHub Actions' PowerShell wrappers exit using LASTEXITCODE when it exists,
+    # even after every subsequent PowerShell assertion has passed. Clear only
+    # after all negative and positive test scenarios have succeeded.
+    $global:LASTEXITCODE = 0
     Write-Host ('SUCCESS: self-update checksum, syntax, replacement and rollback under ' + $Runtime)
 }
 finally {
