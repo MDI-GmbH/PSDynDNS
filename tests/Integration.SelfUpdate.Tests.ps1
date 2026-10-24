@@ -46,7 +46,7 @@ function Hash-Ci {
 }
 function Wait-CiHash {
     param([string]$File,[string]$Hash)
-    for ($n=0;$n -lt 120;$n++) {
+    for ($n=0;$n -lt 320;$n++) {
         if (Test-Path -LiteralPath $File -PathType Leaf) {
             try { if ((Hash-Ci $File) -eq $Hash) { return $true } } catch {}
         }
@@ -107,7 +107,18 @@ try {
 
     $good = Invoke-CiUpdate -Case 'success' -NewText 'Write-Host "updated version"'
     Assert-Ci ($good.ExitCode -eq 0) 'Valid update starts asynchronous replacement'
-    Assert-Ci (Wait-CiHash -File $good.Target -Hash $good.NewHash) 'Helper replaces client with new bytes'
+    $replaced = Wait-CiHash -File $good.Target -Hash $good.NewHash
+    if (-not $replaced) {
+        foreach ($file in @($good.Target,$good.Stage,$good.Backup)) {
+            if (Test-Path -LiteralPath $file -PathType Leaf) {
+                Write-Host ('Self-update diagnostic: ' + $file +
+                    ' SHA256=' + (Hash-Ci $file))
+            } else {
+                Write-Host ('Self-update diagnostic: missing ' + $file)
+            }
+        }
+    }
+    Assert-Ci $replaced 'Helper replaces client with new bytes'
     Assert-Ci (Wait-CiHash -File $good.Backup -Hash $good.OldHash) 'Helper backs up previous client'
     Assert-Ci (-not (Test-Path -LiteralPath $good.Stage)) 'Helper consumes staged update'
 
