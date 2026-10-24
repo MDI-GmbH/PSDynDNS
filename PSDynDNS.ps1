@@ -107,13 +107,7 @@ function Read-ClientConfig {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Configuration not found: $Path" }
     $cfg = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ([string]::IsNullOrWhiteSpace([string]$cfg.Hostname) -or $cfg.Hostname -notmatch '^(?=.{1,253}$)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$') {
-        throw 'Hostname must be a valid FQDN.'
-    }
-    if (-not $cfg.IPv4Enabled -and -not $cfg.IPv6Enabled) { throw 'Enable IPv4 and/or IPv6.' }
-    Assert-HttpsUrl ([string]$cfg.UpdateUrl)
-    if ($cfg.IPv4Enabled) { Assert-HttpsUrl ([string]$cfg.IPv4CheckUrl) }
-    if ($cfg.IPv6Enabled) { Assert-HttpsUrl ([string]$cfg.IPv6CheckUrl) }
+    Assert-PSDynDnsSettings $cfg
     return $cfg
 }
 
