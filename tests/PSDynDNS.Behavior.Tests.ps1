@@ -288,9 +288,13 @@ Describe 'GitHub update trust and API failure paths' {
         $candidate = Get-UpdateCandidate main
         $candidate.Channel | Should -Be 'main'
         $candidate.Commit | Should -Be $script:commitSha
-        $candidate.Sha256 | Should -Be (
-            (Get-FileHash -InputStream ([IO.MemoryStream]::new($script:gitBlobContent)) -Algorithm SHA256).Hash.ToLowerInvariant()
-        )
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            $expectedHash = ([BitConverter]::ToString(
+                $sha256.ComputeHash($script:gitBlobContent)
+            )).Replace('-', '').ToLowerInvariant()
+        } finally { $sha256.Dispose() }
+        $candidate.Sha256 | Should -Be $expectedHash
     }
     It 'rejects published releases lacking verifiable assets' {
         $release = [pscustomobject]@{
