@@ -54,6 +54,27 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $result = Invoke-Pester -Path ./tests -PassThru -Output Detailed
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { exit 1 }
+  pwsh7:
+    name: powershell-7
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Pester for PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -ge 5 })) {
+            Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Scope CurrentUser -Force -SkipPublisherCheck -Confirm:$false
+          }
+          Import-Module Pester -MinimumVersion 5.0
+      - name: Run compatibility tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = Invoke-Pester -Path ./tests/PSDynDNS.Tests.ps1 -PassThru -Output Detailed
+          if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 compatibility tests failed.' }
+
   integration:
     name: integration-windows
     needs: test
@@ -69,7 +90,7 @@ jobs:
 
   build:
     name: build
-    needs: [test, integration]
+    needs: [test, pwsh7, integration]
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: windows-2022
     timeout-minutes: 5
