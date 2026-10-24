@@ -76,7 +76,6 @@ jobs:
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 compatibility tests failed.' }
 
   integration:
-    name: integration-windows
     needs: [test, pwsh7]
     strategy:
       fail-fast: false
