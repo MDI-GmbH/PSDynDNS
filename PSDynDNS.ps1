@@ -131,7 +131,8 @@ function Read-MachineSecret {
 
 function Get-PublicAddress {
     param([string]$Url, [System.Net.Sockets.AddressFamily]$Family)
-    $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 15 -MaximumRedirection 0 -Headers @{ 'User-Agent' = $script:UserAgent }
+    $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 15 `
+        -MaximumRedirection 0 -Headers @{ 'User-Agent' = $script:UserAgent }
     $result = if ($response.Content -is [byte[]]) {
         [Text.Encoding]::UTF8.GetString($response.Content).Trim()
     } else {
@@ -182,7 +183,10 @@ function Get-DnsComparison {
 
 function Invoke-DynDnsRequest {
     param($Config, [string]$Secret, [string]$AddressList)
-    $username = if ($null -eq $Config.PSObject.Properties['Username'] -or [string]::IsNullOrEmpty([string]$Config.Username)) { [string]$Config.Hostname } else { [string]$Config.Username }
+    $username = [string]$Config.Hostname
+    if ($null -ne $Config.PSObject.Properties['Username'] -and $Config.Username) {
+        $username = [string]$Config.Username
+    }
     $pair = '{0}:{1}' -f $username, $Secret
     $authorization = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pair))
     $separator = if ([string]$Config.UpdateUrl -match '\?') { '&' } else { '?' }
@@ -213,7 +217,11 @@ function Get-ResponseCategory {
 
 function Read-ClientState {
     param([string]$Path)
-    $fields = @('LastIPv4','LastIPv6','Fingerprint','BlockedReason','RetryAfterUtc','LastUpdateCheckUtc','LastUpdateAttemptUtc','LastSuccessfulUpdateCheckUtc','LastProviderUpdateUtc','LastDnsObservation')
+    $fields = @(
+        'LastIPv4', 'LastIPv6', 'Fingerprint', 'BlockedReason', 'RetryAfterUtc',
+        'LastUpdateCheckUtc', 'LastUpdateAttemptUtc', 'LastSuccessfulUpdateCheckUtc',
+        'LastProviderUpdateUtc', 'LastDnsObservation'
+    )
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         $empty = [pscustomobject]@{}
         foreach ($field in $fields) { Add-Member -InputObject $empty -NotePropertyName $field -NotePropertyValue $null }
@@ -298,7 +306,18 @@ function Get-UpdateCandidate {
         if ([string]$file.sha -notmatch '^[a-fA-F0-9]{40}$' -or $file.encoding -ne 'base64') { throw 'Invalid main source blob.' }
         $bytes = [Convert]::FromBase64String(([string]$file.content -replace '\s',''))
         $sha1 = [Security.Cryptography.SHA1]::Create()
-        try { $prefix = [Text.Encoding]::ASCII.GetBytes(('blob ' + $bytes.Length + [char]0)); $raw = New-Object byte[] ($prefix.Length + $bytes.Length); [Array]::Copy($prefix,0,$raw,0,$prefix.Length); [Array]::Copy($bytes,0,$raw,$prefix.Length,$bytes.Length); $gitHash = ([BitConverter]::ToString($sha1.ComputeHash($raw))).Replace('-','').ToLowerInvariant() } finally { $sha1.Dispose() }
+        try {
+            $prefix = [Text.Encoding]::ASCII.GetBytes(
+                'blob ' + $bytes.Length + [char]0
+            )
+            $raw = New-Object byte[] ($prefix.Length + $bytes.Length)
+            [Array]::Copy($prefix, 0, $raw, 0, $prefix.Length)
+            [Array]::Copy($bytes, 0, $raw, $prefix.Length, $bytes.Length)
+            $gitHash = ([BitConverter]::ToString($sha1.ComputeHash($raw))).
+                Replace('-', '').ToLowerInvariant()
+        } finally {
+            $sha1.Dispose()
+        }
         if ($gitHash -ne ([string]$file.sha).ToLowerInvariant()) { throw 'Git source blob digest mismatch.' }
         $sha256 = [Security.Cryptography.SHA256]::Create()
         try { $digest = ([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-','').ToLowerInvariant() } finally { $sha256.Dispose() }
@@ -353,7 +372,10 @@ try {
         # The helper must run in the same edition as the client.
         $exeName = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
         $exe = Join-Path $PSHOME $exeName
-        $args = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ParentPid {1} -Original "{2}" -Staged "{3}" -Backup "{4}" -Digest "{5}"' -f $helperPath,$PID,$target,$newFile,$backup,$Release.Sha256
+        $args = '-NoProfile -NonInteractive -ExecutionPolicy Bypass ' +
+            '-File "{0}" -ParentPid {1} -Original "{2}" -Staged "{3}" ' +
+            '-Backup "{4}" -Digest "{5}"' -f
+            $helperPath, $PID, $target, $newFile, $backup, $Release.Sha256
         Start-Process -FilePath $exe -ArgumentList $args -WindowStyle Hidden | Out-Null
     } catch {
         Remove-Item -LiteralPath $newFile -Force -ErrorAction SilentlyContinue
@@ -464,7 +486,9 @@ function Invoke-Client {
         $servers = if ($null -ne $config.PSObject.Properties['DnsServers']) { [string[]]$config.DnsServers } else { @('8.8.8.8','8.8.4.4') }
         $dnsResult = $null
         if (-not $Force) {
-            $dnsResult = Get-DnsComparison -Hostname $config.Hostname -Servers $servers -IPv4 $ipv4 -IPv6 $ipv6 -IPv4Enabled $config.IPv4Enabled -IPv6Enabled $config.IPv6Enabled
+            $dnsResult = Get-DnsComparison -Hostname $config.Hostname -Servers $servers `
+                -IPv4 $ipv4 -IPv6 $ipv6 `
+                -IPv4Enabled $config.IPv4Enabled -IPv6Enabled $config.IPv6Enabled
             if ($dnsResult.Matches) {
                 Write-Verbose 'DNS records already match public IP; provider request skipped.'
                 Write-ClientLog $logPath INFO 'DNS A/AAAA records match public IP; provider request skipped.'
