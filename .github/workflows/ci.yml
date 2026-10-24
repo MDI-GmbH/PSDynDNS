@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 # PR runs share one concurrency group. A newer commit cancels an older run.
 # Non-PR runs have their own group and cannot cancel main builds.
@@ -65,6 +66,19 @@ jobs:
             throw 'Code coverage below required 75%.'
           }
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { exit 1 }
+      - name: Upload PowerShell ps51 coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-ps51
+          path: coverage-ps51.xml
+          if-no-files-found: error
+      - name: Publish PowerShell ps51 coverage to Codecov
+        uses: codecov/codecov-action@v6
+        with:
+          files: coverage-ps51.xml
+          flags: ps51
+          use_oidc: true
+          fail_ci_if_error: false
   tests-ps7:
     name: tests-ps7
     runs-on: windows-2022
@@ -97,6 +111,19 @@ jobs:
           }
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 compatibility tests failed.' }
 
+      - name: Upload PowerShell ps7 coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-ps7
+          path: coverage-ps7.xml
+          if-no-files-found: error
+      - name: Publish PowerShell ps7 coverage to Codecov
+        uses: codecov/codecov-action@v6
+        with:
+          files: coverage-ps7.xml
+          flags: ps7
+          use_oidc: true
+          fail_ci_if_error: false
   build:
     name: build
     needs: [tests-ps51, tests-ps7]
