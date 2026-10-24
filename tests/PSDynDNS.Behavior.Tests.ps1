@@ -52,6 +52,83 @@ Describe 'State, HTTP and configuration regression tests' {
     }
 }
 Describe 'Shared semantic release selection' {
+    It 'downloads and verifies a beta release through the installer and rejects tampered assets' {
+        # Load just the installer functions: never execute the install entrypoint.
+        $installerPath = Join-Path $PSScriptRoot '..\Install-PSDynDNS.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            $installerPath, [ref]$tokens, [ref]$parseErrors)
+        $parseErrors.Count | Should -Be 0
+        foreach ($name in @('Select-PSDynDnsRelease','Install-ClientFile')) {
+            $definitions = @($ast.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq $name
+            }, $true))
+            $definitions.Count | Should -Be 1
+            . ([scriptblock]::Create($definitions[0].Extent.Text))
+        }
+
+        # No installed files, scheduled tasks, external connections, or secrets.
+        function Set-ProtectedAcl {
+            param([string]$Path, [switch]$ClientRead)
+        }
+
+        $payload = '$script:Version = ' + [char]39 + '0.1.0-beta.2' + [char]39
+        $script:releaseDownloadBytes = [Text.Encoding]::UTF8.GetBytes($payload)
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            $expected = [BitConverter]::ToString(
+                $sha256.ComputeHash($script:releaseDownloadBytes)
+            ).Replace('-','').ToLowerInvariant()
+        } finally { $sha256.Dispose() }
+
+        $url = 'https://github.com/MDI-GmbH/PSDynDNS/releases/download/v0.1.0-beta.2/PSDynDNS.ps1'
+        $asset = [pscustomobject]@{
+            name='PSDynDNS.ps1'
+            digest=('sha256:' + $expected)
+            browser_download_url=$url
+        }
+        $script:releaseApiRecords = @(
+            [pscustomobject]@{
+                tag_name='v0.1.0-beta.1'
+                draft=$false
+                prerelease=$true
+                assets=@($asset)
+            },
+            [pscustomobject]@{
+                tag_name='v0.1.0-beta.2'
+                draft=$false
+                prerelease=$true
+                assets=@($asset)
+            }
+        )
+        # Model Invoke-RestMethod returning the entire release array as one item.
+        Mock Invoke-RestMethod { ,$script:releaseApiRecords }
+        Mock Invoke-WebRequest {
+            param($Uri,$OutFile,$UseBasicParsing,$TimeoutSec)
+            [IO.File]::WriteAllBytes([string]$OutFile,$script:releaseDownloadBytes)
+        }
+
+        $destination = Join-Path $TestDrive 'beta-client.ps1'
+        { Install-ClientFile -Channel beta -Destination $destination } | Should -Not -Throw
+        (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() |
+            Should -Be $expected
+        Should -Invoke Invoke-RestMethod -Times 1 -Exactly
+        Should -Invoke Invoke-WebRequest -Times 1 -Exactly -ParameterFilter {
+            [string]$Uri -eq $url
+        }
+
+        # The destination must remain untouched when the downloaded file is tampered with.
+        $script:releaseDownloadBytes = [Text.Encoding]::UTF8.GetBytes('Write-Output "tampered"')
+        { Install-ClientFile -Channel beta -Destination $destination } |
+            Should -Throw '*SHA-256 verification*'
+        (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() |
+            Should -Be $expected
+        Should -Invoke Invoke-RestMethod -Times 2 -Exactly
+        Should -Invoke Invoke-WebRequest -Times 2 -Exactly
+    }
     It 'accepts an Invoke-RestMethod-style nested array and retains the full asset digest' {
         $oldDigest = ('a' * 64)
         $newDigest = ('b' * 64)
@@ -115,12 +192,12 @@ Describe 'Shared semantic release selection' {
 }
 Describe 'DNS as source of truth' {
     It 'matches the public IP to the published DNS A record' {
-        Mock Get-PublishedDnsAddresses { '82.149.168.179' }
-        (Get-DnsComparison -Hostname 'test.example.org' -Servers @('8.8.8.8') -IPv4 '82.149.168.179' -IPv4Enabled $true -IPv6Enabled $false).Matches | Should -BeTrue
+        Mock Get-PublishedDnsAddresses { '9.9.9.9' }
+        (Get-DnsComparison -Hostname 'test.example.org' -Servers @('8.8.8.8') -IPv4 '9.9.9.9' -IPv4Enabled $true -IPv6Enabled $false).Matches | Should -BeTrue
     }
     It 'identifies a manually changed DNS record as drift' {
         Mock Get-PublishedDnsAddresses { '203.0.113.2' }
-        (Get-DnsComparison -Hostname 'test.example.org' -Servers @('8.8.8.8') -IPv4 '82.149.168.179' -IPv4Enabled $true -IPv6Enabled $false).Matches | Should -BeFalse
+        (Get-DnsComparison -Hostname 'test.example.org' -Servers @('8.8.8.8') -IPv4 '9.9.9.9' -IPv4Enabled $true -IPv6Enabled $false).Matches | Should -BeFalse
     }
     It 'fails closed when a DNS server times out' {
         Mock Resolve-DnsName { throw 'DNS server timeout' }
@@ -154,7 +231,7 @@ Describe 'Provider errors and software-update retries' {
         $cfg | ConvertTo-Json | Set-Content -LiteralPath $script:testConfig -Encoding UTF8
         $script:testState = Join-Path $root 'runtime\state.json'
         '{}' | Set-Content -LiteralPath $script:testState -Encoding UTF8
-        Mock Get-PublicAddress { '82.149.168.179' }
+        Mock Get-PublicAddress { '9.9.9.9' }
         Mock Get-DnsComparison { [pscustomobject]@{Matches=$false;Observation='A=203.0.113.2;AAAA='} }
         Mock Read-MachineSecret { 'fake-ci-secret' }
     }
@@ -167,14 +244,14 @@ Describe 'Provider errors and software-update retries' {
     }
     It 'updates DNS drift even when LastIPv4 matches the public address' {
         $state = Read-ClientState $script:testState
-        $state.LastIPv4 = '82.149.168.179'
+        $state.LastIPv4 = '9.9.9.9'
         Save-ClientState $script:testState $state
-        Mock Invoke-DynDnsRequest { 'good 82.149.168.179' }
+        Mock Invoke-DynDnsRequest { 'good 9.9.9.9' }
         { Invoke-Client -Path $script:testConfig -Force $false } | Should -Not -Throw
         Should -Invoke Invoke-DynDnsRequest -Times 1 -Exactly
     }
     It 'skips the DynDNS provider when DNS already matches' {
-        Mock Get-DnsComparison { [pscustomobject]@{Matches=$true;Observation='A=82.149.168.179;AAAA='} }
+        Mock Get-DnsComparison { [pscustomobject]@{Matches=$true;Observation='A=9.9.9.9;AAAA='} }
         Mock Invoke-DynDnsRequest { throw 'Provider must not be contacted' }
         { Invoke-Client -Path $script:testConfig -Force $false } | Should -Not -Throw
         Should -Invoke Invoke-DynDnsRequest -Times 0
@@ -187,13 +264,13 @@ Describe 'Provider errors and software-update retries' {
         Should -Invoke Invoke-DynDnsRequest -Times 1 -Exactly
     }
     It 'accepts nochg without marking the provider as blocked' {
-        Mock Invoke-DynDnsRequest { 'nochg 82.149.168.179' }
+        Mock Invoke-DynDnsRequest { 'nochg 9.9.9.9' }
         { Invoke-Client -Path $script:testConfig -Force $false } | Should -Not -Throw
         (Read-ClientState $script:testState).BlockedReason | Should -BeNullOrEmpty
-        (Read-ClientState $script:testState).LastIPv4 | Should -Be '82.149.168.179'
+        (Read-ClientState $script:testState).LastIPv4 | Should -Be '9.9.9.9'
     }
     It 'does not repeat a successful provider update against stale DNS cache' {
-        Mock Invoke-DynDnsRequest { 'good 82.149.168.179' }
+        Mock Invoke-DynDnsRequest { 'good 9.9.9.9' }
         Invoke-Client -Path $script:testConfig -Force $false
         Invoke-Client -Path $script:testConfig -Force $false
         Should -Invoke Invoke-DynDnsRequest -Times 1 -Exactly
@@ -205,7 +282,7 @@ Describe 'Provider errors and software-update retries' {
     }
     It 'bypasses DNS comparison only for an explicit force update' {
         Mock Get-DnsComparison { throw 'DNS comparison must be skipped' }
-        Mock Invoke-DynDnsRequest { 'good 82.149.168.179' }
+        Mock Invoke-DynDnsRequest { 'good 9.9.9.9' }
         { Invoke-Client -Path $script:testConfig -Force $true } | Should -Not -Throw
         Should -Invoke Get-DnsComparison -Times 0
         Should -Invoke Invoke-DynDnsRequest -Times 1 -Exactly
@@ -355,9 +432,9 @@ Describe 'Additional mock-based network paths' {
     It 'fails closed when two DNS resolvers disagree' {
         Mock Resolve-DnsName {
             if ($Server -eq '8.8.8.8') {
-                [pscustomobject]@{ Type='A';IPAddress='82.149.168.179' }
+                [pscustomobject]@{ Type='A';IPAddress='9.9.9.9' }
             } else {
-                [pscustomobject]@{ Type='A';IPAddress='82.149.168.178' }
+                [pscustomobject]@{ Type='A';IPAddress='9.9.9.8' }
             }
         }
         { Get-PublishedDnsAddresses -Hostname 'host.example.org' -RecordType A -Servers @('8.8.8.8','8.8.4.4') } | Should -Throw '*disagree*'

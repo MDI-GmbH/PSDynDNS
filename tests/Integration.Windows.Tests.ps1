@@ -317,12 +317,12 @@ try {
             # Reproduce a permanent bad-credentials block, then rotate the key.
             # SetKey must unblock badauth without deleting the entire state file.
             $authStatePath = Join-Path $script:InstallRoot 'runtime\state.json'
-            '{"BlockedReason":"badauth","RetryAfterUtc":null,"Fingerprint":"old-fingerprint","LastIPv4":"82.149.168.179"}' |
+            '{"BlockedReason":"badauth","RetryAfterUtc":null,"Fingerprint":"old-fingerprint","LastIPv4":"9.9.9.9"}' |
                 Set-Content -LiteralPath $authStatePath -Encoding UTF8
             Invoke-Installer -Arguments @('-SetKey')
             $afterKeyRotation = Get-Content -LiteralPath $authStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
             Assert-True ($null -eq $afterKeyRotation.BlockedReason) 'SetKey unblocks previous badauth status'
-            Assert-Equal $afterKeyRotation.LastIPv4 '82.149.168.179' 'SetKey retains last reported IP'
+            Assert-Equal $afterKeyRotation.LastIPv4 '9.9.9.9' 'SetKey retains last reported IP'
 
 
             Invoke-Installer -Arguments @(
