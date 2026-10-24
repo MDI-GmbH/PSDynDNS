@@ -270,18 +270,11 @@ function Install-ClientFile {
             'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases?per_page=100'
         } else { 'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases/latest' }
         $releases = @(Invoke-RestMethod -Uri $url -Headers @{'User-Agent'='PSDynDNS-Installer'} -TimeoutSec 20)
-        $release = if ($Channel -eq 'beta') {
-            $releases | Where-Object { -not $_.draft -and $_.prerelease -and [string]$_.tag_name -match '^v?\d+\.\d+\.\d+-(?:alpha|beta|rc)\.\d+$' } | Select-Object -First 1
-        } else { $releases | Select-Object -First 1 }
-        if (-not $release -or $release.draft -or ($Channel -eq 'stable' -and $release.prerelease)) {
-            throw "No valid published $Channel release available."
-        }
-        $asset = @($release.assets | Where-Object { $_.name -eq 'PSDynDNS.ps1' }) | Select-Object -First 1
-        if (-not $asset -or -not $asset.digest -or $asset.digest -notmatch '^sha256:([0-9a-fA-F]{64})$') { throw 'Release asset digest unavailable.' }
-        $expected = $Matches[1]
+        $release = Select-PSDynDnsRelease -Releases $releases -Channel $Channel
+        $expected = $release.Sha256
         $temp = Join-Path $env:TEMP ('PSDynDNS-' + [guid]::NewGuid().ToString('N') + '.ps1')
         try {
-            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $temp -UseBasicParsing -TimeoutSec 60
+            Invoke-WebRequest -Uri $release.Url -OutFile $temp -UseBasicParsing -TimeoutSec 60
             if ((Get-FileHash -LiteralPath $temp -Algorithm SHA256).Hash -ne $expected) { throw 'Downloaded release failed SHA-256 verification.' }
             $errors = $null
             $null = [Management.Automation.Language.Parser]::ParseFile($temp,[ref]$null,[ref]$errors)
@@ -358,7 +351,20 @@ switch ($PSCmdlet.ParameterSetName) {
     SetKey {
         if (-not (Test-Path -LiteralPath $script:ConfigPath)) { throw 'Install first.' }
         Save-Secret
-        Write-Host 'Secret updated.'
+        # Re-try with new credentials. Preserve address/check metadata while
+        # clearing only the previous authentication failure.
+        $stateFile = Join-Path (Join-Path $script:Root 'runtime') 'state.json'
+        if (Test-Path -LiteralPath $stateFile -PathType Leaf) {
+            $state = Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($null -ne $state -and $null -ne $state.PSObject.Properties['BlockedReason'] -and
+                [string]$state.BlockedReason -eq 'badauth') {
+                $state.BlockedReason = $null
+                if ($null -ne $state.PSObject.Properties['RetryAfterUtc']) { $state.RetryAfterUtc = $null }
+                $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $stateFile -Encoding UTF8
+                Set-ProtectedAcl $stateFile -ClientModify
+            }
+        }
+        Write-Host 'Secret updated; a previous badauth block, if any, has been cleared.'
     }
     ResetState {
         $state = Join-Path (Join-Path $script:Root 'runtime') 'state.json'
