@@ -195,6 +195,9 @@ function Invoke-DynDnsRequest {
             Authorization = 'Basic ' + $authorization
             'User-Agent' = $script:UserAgent
         }
+        if ($response.Content -is [byte[]]) {
+            return [Text.Encoding]::UTF8.GetString($response.Content).Trim()
+        }
         return ([string]$response.Content).Trim()
     } catch {
         if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 401) { return 'badauth' }
@@ -418,12 +421,15 @@ function Invoke-Client {
         $state = Read-ClientState $statePath
         $now = (Get-Date).ToUniversalTime()
         $fingerprint = Get-ConfigurationFingerprint $config
+        $phase = 'check prior provider status'
         if ($state.BlockedReason -and $state.Fingerprint -eq $fingerprint -and -not $Force) {
-            Write-Verbose ('DynDNS update suppressed: provider previously blocked the configuration (' + [string]$state.BlockedReason + ').')
             Invoke-SoftwareUpdate $config $state $statePath $logPath
-            return
+            throw ('DynDNS remains blocked by provider: ' + [string]$state.BlockedReason + '. Correct the cause or use -SetKey/-ResetState.')
         }
-        if ($state.RetryAfterUtc -and $state.Fingerprint -eq $fingerprint -and $now -lt (ConvertFrom-UtcTimestamp $state.RetryAfterUtc) -and -not $Force) { Invoke-SoftwareUpdate $config $state $statePath $logPath; return }
+        if ($state.RetryAfterUtc -and $state.Fingerprint -eq $fingerprint -and $now -lt (ConvertFrom-UtcTimestamp $state.RetryAfterUtc) -and -not $Force) {
+            Invoke-SoftwareUpdate $config $state $statePath $logPath
+            throw ('DynDNS provider requested backoff until ' + [string]$state.RetryAfterUtc)
+        }
         $ipv4 = $null
         $ipv6 = $null
         if ($config.IPv4Enabled) {
