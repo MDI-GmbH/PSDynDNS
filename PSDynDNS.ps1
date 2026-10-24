@@ -185,7 +185,7 @@ function Get-DnsComparison {
 
 function Invoke-DynDnsRequest {
     param($Config, [string]$Secret, [string]$AddressList)
-    $username = if ([string]::IsNullOrEmpty([string]$Config.Username)) { [string]$Config.Hostname } else { [string]$Config.Username }
+    $username = if ($null -eq $Config.PSObject.Properties['Username'] -or [string]::IsNullOrEmpty([string]$Config.Username)) { [string]$Config.Hostname } else { [string]$Config.Username }
     $pair = '{0}:{1}' -f $username, $Secret
     $authorization = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pair))
     $separator = if ([string]$Config.UpdateUrl -match '\?') { '&' } else { '?' }
