@@ -8,5 +8,6 @@
   "IPv6CheckUrl": "https://ipv6.nsupdate.info/myip",
   "IntervalMinutes": 10,
   "AutoUpdate": false,
-  "UpdateCheckHours": 24
+  "UpdateCheckHours": 24,
+  "UpdateChannel": "stable"
 }
