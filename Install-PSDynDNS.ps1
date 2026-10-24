@@ -72,7 +72,7 @@ function Get-TaskSid {
     # Calculate the SID directly: translating the virtual account name
     # NT TASK\<name> depends on account-name resolution and OS language.
     # This ASCII task name has the same invariant uppercase form on all locales.
-    $taskPath = '\\' + $script:TaskName.ToUpperInvariant()
+    $taskPath = '\' + $script:TaskName.ToUpperInvariant()
     $sha = [Security.Cryptography.SHA1]::Create()
     try { $hash = $sha.ComputeHash([Text.Encoding]::Unicode.GetBytes($taskPath)) }
     finally { $sha.Dispose() }
