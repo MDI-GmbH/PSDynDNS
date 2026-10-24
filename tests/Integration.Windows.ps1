@@ -208,6 +208,10 @@ try {
     return Get-Content -LiteralPath $outFile -Raw -Encoding UTF8 | ConvertFrom-Json
 }
 
+# Run the real self-update scenarios on a disposable copy before changing system state.
+& (Join-Path $PSScriptRoot 'Integration.SelfUpdate.Windows.ps1') -Runtime $Runtime
+if ($LASTEXITCODE -ne 0) { throw 'Self-update integration failed.' }
+
 Write-Host 'Running isolated PSDynDNS Windows installation integration test.'
 Assert-True (Test-WindowsAdmin) 'GitHub Windows runner is elevated'
 Assert-True (-not (Test-Path -LiteralPath $script:InstallRoot)) 'No existing PSDynDNS installation on isolated CI runner'
