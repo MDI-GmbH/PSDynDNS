@@ -5,11 +5,12 @@ on:
     branches: [main]
     types: [opened, reopened, synchronize, ready_for_review]
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
   contents: read
+  id-token: write
 
 # PR runs share one concurrency group. A newer commit cancels an older run.
 # Non-PR runs have their own group and cannot cancel main builds.
@@ -20,10 +21,15 @@ concurrency:
 jobs:
   tests-ps51:
     name: tests-ps51
+    permissions:
+      contents: read
+      id-token: write
     runs-on: windows-2022
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - name: Parse Windows PowerShell 5.1 scripts
         shell: powershell
         run: |
@@ -52,72 +58,110 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $result = Invoke-Pester -Path ./tests -PassThru -Output Detailed
+          $pesterConfig = New-PesterConfiguration
+          $pesterConfig.Run.Path = @('./tests/PSDynDNS.Tests.ps1','./tests/PSDynDNS.Behavior.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1','./tests/Integration.Windows.Tests.ps1')
+          $pesterConfig.Run.PassThru = $true
+          $pesterConfig.Output.Verbosity = 'Detailed'
+          $pesterConfig.CodeCoverage.Enabled = $true
+          $pesterConfig.CodeCoverage.Path = @('./PSDynDNS.ps1','./Install-PSDynDNS.ps1')
+          $pesterConfig.CodeCoverage.OutputFormat = 'JaCoCo'
+          $pesterConfig.CodeCoverage.OutputPath = 'coverage-ps51.xml'
+          $result = Invoke-Pester -Configuration $pesterConfig
+          if ($null -eq $result.CodeCoverage -or $result.CodeCoverage.CoveragePercent -lt 75) {
+            throw 'Code coverage below required 75%.'
+          }
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { exit 1 }
+      - name: Preserve PowerShell 5.1 coverage
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: coverage-ps51
+          path: coverage-ps51.xml
+          if-no-files-found: error
+      - name: Upload PowerShell 5.1 coverage
+        uses: codecov/codecov-action@v7.1.1
+        with:
+          files: ./coverage-ps51.xml
+          flags: ps51
+          disable_search: true
+          use_oidc: true
+          fail_ci_if_error: false
   tests-ps7:
     name: tests-ps7
+    permissions:
+      contents: read
+      id-token: write
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Pester for PowerShell 7
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -ge 5 })) {
-            Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Scope CurrentUser -Force -SkipPublisherCheck -Confirm:$false
+            Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Scope CurrentUser -Force -Confirm:$false
           }
           Import-Module Pester -MinimumVersion 5.0
       - name: Run compatibility tests
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $result = Invoke-Pester -Path ./tests/PSDynDNS.Tests.ps1 -PassThru -Output Detailed
+          $pesterConfig = New-PesterConfiguration
+          $pesterConfig.Run.Path = @('./tests/PSDynDNS.Tests.ps1','./tests/PSDynDNS.Behavior.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1','./tests/Integration.Windows.Tests.ps1')
+          $pesterConfig.Run.PassThru = $true
+          $pesterConfig.Output.Verbosity = 'Detailed'
+          $pesterConfig.CodeCoverage.Enabled = $true
+          $pesterConfig.CodeCoverage.Path = @('./PSDynDNS.ps1','./Install-PSDynDNS.ps1')
+          $pesterConfig.CodeCoverage.OutputFormat = 'JaCoCo'
+          $pesterConfig.CodeCoverage.OutputPath = 'coverage-ps7.xml'
+          $result = Invoke-Pester -Configuration $pesterConfig
+          if ($null -eq $result.CodeCoverage -or $result.CodeCoverage.CoveragePercent -lt 75) {
+            throw 'Code coverage below required 75%.'
+          }
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 compatibility tests failed.' }
 
-  integration-ps51:
-    name: integration-ps51
-    needs: [tests-ps51, tests-ps7]
-    runs-on: windows-2022
-    timeout-minutes: 12
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install and run under Windows PowerShell 5.1
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & ./tests/Integration.Windows.ps1 -Runtime WindowsPowerShell
+      - name: Preserve PowerShell 7 coverage
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: coverage-ps7
+          path: coverage-ps7.xml
+          if-no-files-found: error
+      - name: Upload PowerShell 7 coverage
+        uses: codecov/codecov-action@v7.1.1
+        with:
+          files: ./coverage-ps7.xml
+          flags: ps7
+          disable_search: true
+          use_oidc: true
+          fail_ci_if_error: false
 
-  integration-ps7:
-    name: integration-ps7
+  release-package-check:
+    name: release-package-check
     needs: [tests-ps51, tests-ps7]
-    runs-on: windows-2022
-    timeout-minutes: 12
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install and run under PowerShell 7
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & ./tests/Integration.Windows.ps1 -Runtime PowerShell7
-
-  build:
-    name: build
-    needs: [tests-ps51, tests-ps7, integration-ps51, integration-ps7]
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: windows-2022
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - name: Assemble release package
-        shell: powershell
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dry-run release packaging and tamper test
+        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
-          Compress-Archive -Path PSDynDNS.ps1,Install-PSDynDNS.ps1,config.example.json,README.md,LICENSE -DestinationPath dist/PSDynDNS.zip -Force
-          Get-FileHash dist/PSDynDNS.zip -Algorithm SHA256 | Format-List | Out-String | Set-Content dist/PSDynDNS.sha256
-      - uses: actions/upload-artifact@v4
-        with:
-          name: PSDynDNS-build
-          path: dist/*
-          if-no-files-found: error
+          & ./tools/Build-ReleasePackage.ps1 -Version '0.1.0-beta.999'
+          $asset = (Resolve-Path 'dist/PSDynDNS.ps1').Path
+          $original = [IO.File]::ReadAllBytes($asset)
+          try {
+            [IO.File]::AppendAllText($asset, "`n# tampered")
+            $rejected = $false
+            try {
+              & ./tools/Build-ReleasePackage.ps1 -Version '0.1.0-beta.999' -VerifyOnly
+            } catch {
+              $rejected = $true
+            }
+            if (-not $rejected) { throw 'Tampered asset unexpectedly passed verification.' }
+          } finally {
+            [IO.File]::WriteAllBytes($asset, $original)
+          }

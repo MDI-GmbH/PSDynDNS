@@ -1,6 +1,7 @@
 # PSDynDNS
 
 [![CI](https://github.com/MDI-GmbH/PSDynDNS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MDI-GmbH/PSDynDNS/actions/workflows/ci.yml)
+[![Coverage (dev)](https://codecov.io/gh/MDI-GmbH/PSDynDNS/branch/dev/graph/badge.svg)](https://app.codecov.io/gh/MDI-GmbH/PSDynDNS/tree/dev)
 [![Release](https://img.shields.io/github/v/release/MDI-GmbH/PSDynDNS?include_prereleases&label=release)](https://github.com/MDI-GmbH/PSDynDNS/releases)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Windows PowerShell 5.1](https://img.shields.io/badge/Windows%20PowerShell-5.1-5391FE)
@@ -14,7 +15,7 @@
 - Independent IPv4 and IPv6 configuration with public-IP discovery.
 - Scheduled updates under `LOCAL SERVICE` using task-specific NTFS access.
 - Machine-scoped DPAPI for the update secret, plus restrictive NTFS ACLs.
-- Change detection, provider response handling, logging and retry behavior.
+- Reconciliation of public IPv4/IPv6 with DNS A/AAAA records queried through configurable resolvers.
 - Optional `stable`, `beta` and `main` self-update channels.
 - Temporary bootstrap installer: only the client stays installed.
 
@@ -56,11 +57,15 @@ The installer asks for the DynDNS secret interactively. The scheduler interval i
 | Command | Result |
 | --- | --- |
 | `.\Install-PSDynDNS.ps1 -Repair` | Restore the task and configured permissions |
+| `.\Install-PSDynDNS.ps1 -UpdateClient -UpdateChannel beta` | Manually install the latest available beta release |
+| `.\Install-PSDynDNS.ps1 -UpdateClient -LocalClientPath .\PSDynDNS.ps1` | Manually install a local client file |
 | `.\Install-PSDynDNS.ps1 -ResetState` | Reset cached address and blocked state |
 | `.\Install-PSDynDNS.ps1 -Uninstall` | Remove executable and task, retain configuration |
 | `.\Install-PSDynDNS.ps1 -Uninstall -Purge` | Remove installation including configuration and secret |
 
-The scheduled task runs the client automatically. Use `-Runtime PowerShell7` during installation (or configuration) to select PowerShell 7 instead of the default Windows PowerShell 5.1. For troubleshooting, the client accepts `-ConfigPath` and `-ForceDnsUpdate`; never run the task-writable installed script with administrator privileges.
+Runtime defaults to Windows PowerShell 5.1; DNS resolvers default to `8.8.8.8` and `8.8.4.4`. Both can be changed through the installer. Manual `-UpdateClient` uses the configured update channel unless overridden; it validates the replacement, temporarily stops the Scheduled Task, keeps a timestamped backup and restores the prior task state. It does not modify configuration, DPAPI secrets, or automatic-update preferences.
+
+New installations explicitly set `AllowAutomaticConfigUpdates` to `true`. Set it to `false` with `-AllowAutomaticConfigUpdates $false` to decline any **future** automatic edits of `config.json`. Existing installations without the option remain opted out until an administrator explicitly enables it. This setting does not change config files or NTFS permissions today.
 
 ## Update channels
 
@@ -76,31 +81,44 @@ Configure the updater using the installer:
 | `beta` | Newest published release, including pre-releases | Pre-production testing |
 | `main` | Current Git `main` commit | Development only |
 
-The updater validates downloads and verifies PowerShell syntax before staging a replacement. **Self-update and rollback are not yet approved for production.** ## Command-line parameters
+The updater validates downloads and verifies PowerShell syntax before staging a replacement. Automated self-update checksum, parsing, swap and rollback integration tests exist for PowerShell 5.1 and 7; validation on real supported server versions is still pending.
 
-Run the bootstrap installer from an **elevated Windows PowerShell 5.1 or PowerShell 7** console. Existing installations are automatically reconfigured when setting arguments are supplied: `-Configure` is optional.
+## Command-line parameters
 
-| Parameter | Usage |
+Installer (requires Administrator rights). Existing installations can be reconfigured without `-Configure`.
+
+| Parameter | Purpose |
 | --- | --- |
-| `-Install` | Install a new instance (requires `-Hostname`). |
-| `-Hostname` | DynDNS hostname (required on first install). |
-| `-Username` | Optional provider username; defaults to hostname. |
-| `-UpdateUrl` | DynDNS2 HTTPS endpoint. |
-| `-IPv4Enabled`, `-IPv6Enabled` | Enable or disable individual IP families using `$true` or `$false`. |
-| `-IPv4CheckUrl`, `-IPv6CheckUrl` | HTTPS address discovery endpoints. |
-| `-Runtime` | `WindowsPowerShell` (default) or `PowerShell7` as task engine; `-Repair` retains selection. |
-| `-IntervalMinutes` | Scheduled Task frequency, default 10 minutes. **Not stored in `config.json`**. |
-| `-AutoUpdate` | Enable or disable automatic software checks. |
-| `-UpdateChannel` | `stable`, `beta`, or `main`. |
-| `-UpdateCheckHours` | Hours between software checks (default 24). |
-| `-SetKey` | Prompt for a new provider secret. |
-| `-Repair` | Restore task and NTFS permissions without resetting credentials. |
-| `-ResetState` | Clear cached address and provider error state. |
-| `-Uninstall` / `-Purge` | Uninstall, optionally removing configuration and secret. |
-| `-LocalClientPath` | Install from a local copy of `PSDynDNS.ps1` (for development). |
-| `-CredentialSecret` | Optional `SecureString` for unattended setup; avoid plaintext secrets. |
+| `-Install -Hostname <FQDN>` | Install client |
+| `-Hostname`, `-Username`, `-UpdateUrl` | DNS name and DynDNS2 credentials endpoint |
+| `-IPv4Enabled`, `-IPv6Enabled` | Enable IP families |
+| `-IPv4CheckUrl`, `-IPv6CheckUrl` | Public IP discovery endpoints |
+| `-DnsServers` | DNS resolver IPs (default: `8.8.8.8`, `8.8.4.4`) |
+| `-Runtime` | `WindowsPowerShell` or `PowerShell7` |
+| `-IntervalMinutes` | Task interval (default: 10; not in JSON) |
+| `-AutoUpdate`, `-UpdateChannel`, `-UpdateCheckHours` | Software update settings |
+| `-AllowAutomaticConfigUpdates` | Opt in/out of future automatic config changes |
+| `-SetKey` | Replace DPAPI-protected secret |
+| `-Repair`, `-ResetState` | Repair installation or reset runtime state |
+| `-UpdateClient [-UpdateChannel beta] [-LocalClientPath <path>]` | Manually update an existing installation |
+| `-Uninstall [-Purge]` | Uninstall; optionally delete all data |
+| `-LocalClientPath` | Install local client file |
+| `-CredentialSecret` | SecureString for unattended setup |
 
-The installed client itself accepts only `-ConfigPath` and `-ForceDnsUpdate`. Administrative configuration happens through the bootstrap installer.
+Client (`PSDynDNS.ps1`):
+
+| Parameter | Purpose |
+| --- | --- |
+| `-ConfigPath` | Override configuration path |
+| `-ForceDnsUpdate` | Update provider regardless of DNS match |
+| `-ForceUpgrade` | Install selected channel's current client version |
+| `-UpgradeChannel stable\|beta\|main` | Override channel for `-ForceUpgrade` only |
+
+```powershell
+& 'C:\ProgramData\PSDynDNS\app\PSDynDNS.ps1' -ForceUpgrade -UpgradeChannel beta
+```
+
+The client compares public IPs with DNS A/AAAA records. `state.json` retains retry and update-check status. Run the installed client without elevation.
 
 ### Install directly from a release
 
@@ -138,6 +156,8 @@ The task identity may write to `app` and `runtime`, but should only read `config
 
 - **Development:** Changes are reviewed via pull requests before merging into `main`.
 - **CI:** [PowerShell CI](.github/workflows/ci.yml) runs Pester in parallel under Windows PowerShell 5.1 and PowerShell 7; only after both succeed do isolated Windows installation integration tests run **for both runtimes**. New PR commits cancel older in-progress CI runs for the same PR.
+- **Coverage:** Both runtimes must achieve at least 75%; JaCoCo reports are uploaded to Codecov and retained as CI artifacts.
+- **Release verification:** CI builds and validates a test release package without publishing.
 - **Build:** Successful tests on `main` produce a ZIP and checksums.
 - **Publishing:** Manually start [Publish Release](.github/workflows/release.yml) on `main`, specify e.g. `0.2.0` (stable) or `0.3.0-beta.1` (pre-release). The release workflow runs tests and prepares assets and automatically generated notes before publication.
 
@@ -145,7 +165,7 @@ Find downloads and release notes on [GitHub Releases](https://github.com/MDI-Gmb
 
 ### Security / validation
 
-The Windows integration job exercises installation, config updates, DPAPI, LOCAL SERVICE task identity, scoped NTFS ACLs, repair, state reset and removal on an ephemeral GitHub runner. It uses synthetic secrets and a nonfunctional HTTPS endpoint, not actual DynDNS credentials. Separate system tests are required for real provider behavior and self-update rollback.
+The Windows integration job exercises installation, config updates, DPAPI, LOCAL SERVICE task identity, scoped NTFS ACLs, repair, state reset and removal on an ephemeral GitHub runner. It uses synthetic secrets and a nonfunctional HTTPS endpoint, not actual DynDNS credentials. Self-update and swap rollback are covered by isolated Windows integration tests in both supported PowerShell runtimes. Real DNS-provider behavior, localized Windows installations, and older Windows Server variants still require separate field verification.
 
 ## License
 

@@ -7,6 +7,11 @@
   "IPv4CheckUrl": "https://ipv4.nsupdate.info/myip",
   "IPv6CheckUrl": "https://ipv6.nsupdate.info/myip",
   "AutoUpdate": false,
+  "AllowAutomaticConfigUpdates": true,
   "UpdateCheckHours": 24,
-  "UpdateChannel": "stable"
+  "UpdateChannel": "stable",
+  "DnsServers": [
+    "8.8.8.8",
+    "8.8.4.4"
+  ]
 }

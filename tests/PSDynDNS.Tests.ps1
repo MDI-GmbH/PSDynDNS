@@ -16,9 +16,18 @@ Describe 'PSDynDNS DynDNS2 protocol' {
         Get-ResponseCategory 'dnserr' | Should -Be 'retry'
     }
     It 'rejects HTTP endpoints and URL credentials' {
-        { Assert-HttpsUrl 'http://example.org/nic/update' } | Should -Throw
-        { Assert-HttpsUrl 'https://user:pass@example.org/nic/update' } | Should -Throw
-        { Assert-HttpsUrl 'https://example.org/nic/update' } | Should -Not -Throw
+        $cfg = [pscustomobject]@{
+            Hostname = 'test.example.org'
+            UpdateUrl = 'https://example.org/nic/update'
+            IPv4Enabled = $true
+            IPv6Enabled = $false
+            IPv4CheckUrl = 'https://example.org/ip4'
+        }
+        { Assert-PSDynDnsSettings $cfg } | Should -Not -Throw
+        $cfg.UpdateUrl = 'http://example.org/nic/update'
+        { Assert-PSDynDnsSettings $cfg } | Should -Throw
+        $cfg.UpdateUrl = 'https://user:pass@example.org/nic/update'
+        { Assert-PSDynDnsSettings $cfg } | Should -Throw
     }
     It 'changes configuration fingerprint when target changes' {
         $a = [pscustomobject]@{ Hostname='one.example.org'; Username=$null; UpdateUrl='https://example.org/nic/update'; IPv4Enabled=$true; IPv6Enabled=$false }
@@ -41,6 +50,48 @@ Describe 'PSDynDNS DynDNS2 protocol' {
     }
 }
 
+Describe 'Strict JSON boolean validation' {
+    It 'rejects a string, number or null for each boolean setting' {
+        foreach ($field in @('IPv4Enabled','IPv6Enabled','AutoUpdate')) {
+            foreach ($bad in @('false','true',0,1,$null)) {
+                $cfg = [pscustomobject]@{
+                    Hostname='host.example.org';UpdateUrl='https://example.org/update'
+                    IPv4Enabled=$true;IPv6Enabled=$false;AutoUpdate=$false
+                    IPv4CheckUrl='https://example.org/myip'
+                }
+                $cfg.$field = $bad
+                { Assert-PSDynDnsSettings $cfg } | Should -Throw "*$field*"
+            }
+        }
+    }
+    It 'accepts a legacy configuration without AutoUpdate' {
+        $cfg = [pscustomobject]@{
+            Hostname='host.example.org';UpdateUrl='https://example.org/update'
+            IPv4Enabled=$true;IPv6Enabled=$false
+            IPv4CheckUrl='https://example.org/myip'
+        }
+        { Assert-PSDynDnsSettings $cfg } | Should -Not -Throw
+    }
+}
+
+Describe 'Future automatic configuration opt-in' {
+    It 'permits only an explicitly enabled boolean value' {
+        (Test-AutomaticConfigUpdatesAllowed ([pscustomobject]@{
+            AllowAutomaticConfigUpdates = $true
+        })) | Should -BeTrue
+    }
+    It 'denies disabled, absent, and malformed opt-in values' {
+        foreach ($cfg in @(
+            [pscustomobject]@{ AllowAutomaticConfigUpdates = $false },
+            [pscustomobject]@{},
+            [pscustomobject]@{ AllowAutomaticConfigUpdates = 'true' },
+            [pscustomobject]@{ AllowAutomaticConfigUpdates = $null }
+        )) {
+            (Test-AutomaticConfigUpdatesAllowed $cfg) | Should -BeFalse
+        }
+    }
+}
+
 Describe 'IP address validation' {
     It 'accepts global IPv4 and IPv6 candidates' {
         Test-PublicIp ([Net.IPAddress]::Parse('8.8.8.8')) | Should -BeTrue
@@ -55,7 +106,7 @@ Describe 'IP address validation' {
 Describe 'State persistence' {
     It 'creates a state with optional update timestamp' {
         $state = Read-ClientState (Join-Path $TestDrive 'missing.json')
-        $state.LastUpdateCheckUtc | Should -BeNullOrEmpty
+        $state.LastUpdateAttemptUtc | Should -BeNullOrEmpty
     }
     It 'round-trips state in runtime' {
         $path = Join-Path $TestDrive 'state.json'
@@ -75,7 +126,7 @@ Describe 'Release response handling' {
         Get-ResponseCategory 'mystery 8.8.8.8' | Should -Be 'unknown'
     }
     It 'does not schedule an update when disabled' {
-        $state = New-Object psobject -Property @{ LastUpdateCheckUtc = $null }
+        $state = New-Object psobject -Property @{ LastUpdateAttemptUtc = $null }
         $config = New-Object psobject -Property @{ AutoUpdate = $false; UpdateCheckHours = 24 }
         Mock Get-UpdateCandidate { throw 'Should not be called' }
         Invoke-SoftwareUpdate $config $state (Join-Path $TestDrive 's.json') (Join-Path $TestDrive 'x.log')
@@ -95,7 +146,61 @@ Describe 'Update channels and release ordering' {
     }
     It 'uses stable by default if config predates update channels' {
         $config = [pscustomobject]@{AutoUpdate=$false;UpdateCheckHours=24}
-        $state = [pscustomobject]@{LastUpdateCheckUtc=$null}
+        $state = [pscustomobject]@{LastUpdateAttemptUtc=$null}
         { Invoke-SoftwareUpdate $config $state (Join-Path $TestDrive 'state.json') (Join-Path $TestDrive 'log.txt') } | Should -Not -Throw
+    }
+}
+
+Describe 'Locale-independent persisted timestamps and fingerprints' {
+    It 'parses roundtrip timestamps identically under multiple cultures' {
+        $originalCulture = [Threading.Thread]::CurrentThread.CurrentCulture
+        $originalUi = [Threading.Thread]::CurrentThread.CurrentUICulture
+        try {
+            $utc = [datetime]::SpecifyKind([datetime]'2026-10-24T16:07:08', [DateTimeKind]::Utc)
+            $roundtrip = $utc.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+            foreach ($name in @('en-US','de-DE','fr-FR','tr-TR')) {
+                $culture = [Globalization.CultureInfo]::GetCultureInfo($name)
+                [Threading.Thread]::CurrentThread.CurrentCulture = $culture
+                [Threading.Thread]::CurrentThread.CurrentUICulture = $culture
+                (ConvertFrom-UtcTimestamp $roundtrip).Ticks | Should -Be $utc.Ticks
+                (ConvertFrom-UtcTimestamp $utc).Ticks | Should -Be $utc.Ticks
+                $cfg = [pscustomobject]@{
+                    Hostname = 'test.example.org'; Username = $null
+                    UpdateUrl = 'https://example.org/nic/update'
+                    IPv4Enabled = $true; IPv6Enabled = $false
+                }
+                $fingerprint = Get-ConfigurationFingerprint $cfg
+                $fingerprint | Should -Match '^[a-f0-9]{64}$'
+                if ($name -eq 'en-US') { $expected = $fingerprint }
+                else { $fingerprint | Should -Be $expected }
+            }
+        } finally {
+            [Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture
+            [Threading.Thread]::CurrentThread.CurrentUICulture = $originalUi
+        }
+    }
+}
+
+Describe 'Sanitized actionable diagnostics' {
+    It 'shows the exception type and useful cause' {
+        try { throw [System.InvalidOperationException]::new('Simulated TLS handshake failure') }
+        catch { $message = Format-ClientFailure -ErrorRecord $_ }
+        $message | Should -Match 'InvalidOperationException'
+        $message | Should -Match 'TLS handshake failure'
+    }
+    It 'redacts the credential, authorization token, and request URL' {
+        $secret = 'ci-sensitive-password'
+        try { throw ('Request failed https://example.org/nic/update?key=abc Authorization: Basic dXNlcjpwYXNz password=' + $secret) }
+        catch { $message = Format-ClientFailure -ErrorRecord $_ -Secret $secret }
+        $message | Should -Not -Match ([regex]::Escape($secret))
+        $message | Should -Not -Match 'dXNlcjpwYXNz'
+        $message | Should -Not -Match 'key=abc'
+        $message | Should -Match '\[REDACTED\]'
+    }
+    It 'collapses multi-line exception messages' {
+        try { throw "Line one`nLine two" }
+        catch { $message = Format-ClientFailure -ErrorRecord $_ }
+        $message | Should -Not -Match "`n"
+        $message | Should -Match 'Line one Line two'
     }
 }

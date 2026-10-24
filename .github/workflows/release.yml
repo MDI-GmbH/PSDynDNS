@@ -25,9 +25,13 @@ jobs:
   release:
     runs-on: windows-2022
     timeout-minutes: 18
+    # Use modern PowerShell for release orchestration and packaging.
+    # Only the explicit Windows PowerShell 5.1 verification steps use powershell.exe.
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - name: Enforce main and validate version
-        shell: powershell
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
           PRERELEASE: ${{ inputs.prerelease }}
@@ -44,11 +48,10 @@ jobs:
           }
           "TAG=v$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Ensure release tag does not exist
-        shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -98,10 +101,16 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $result = Invoke-Pester -Path ./tests -PassThru -Output Detailed
+          $pesterConfig = New-PesterConfiguration
+          $pesterConfig.Run.Path = @('./tests/PSDynDNS.Tests.ps1','./tests/PSDynDNS.Behavior.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1','./tests/Integration.Windows.Tests.ps1')
+          $pesterConfig.Run.PassThru = $true
+          $pesterConfig.Output.Verbosity = 'Detailed'
+          $pesterConfig.CodeCoverage.Enabled = $true
+          $pesterConfig.CodeCoverage.Path = @('./PSDynDNS.ps1','./Install-PSDynDNS.ps1')
+          $result = Invoke-Pester -Configuration $pesterConfig
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'Pester suite failed.' }
+          if ($null -eq $result.CodeCoverage -or $result.CodeCoverage.CoveragePercent -lt 75) { throw 'Windows PowerShell 5.1 coverage below 75%.' }
       - name: Install Pester for PowerShell 7
-        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -ge 5 })) {
@@ -109,52 +118,23 @@ jobs:
           }
           Import-Module Pester -MinimumVersion 5.0
       - name: Run PowerShell 7 compatibility tests
-        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $result = Invoke-Pester -Path ./tests/PSDynDNS.Tests.ps1 -PassThru -Output Detailed
+          $pesterConfig = New-PesterConfiguration
+          $pesterConfig.Run.Path = @('./tests/PSDynDNS.Tests.ps1','./tests/PSDynDNS.Behavior.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1','./tests/Integration.Windows.Tests.ps1')
+          $pesterConfig.Run.PassThru = $true
+          $pesterConfig.Output.Verbosity = 'Detailed'
+          $pesterConfig.CodeCoverage.Enabled = $true
+          $pesterConfig.CodeCoverage.Path = @('./PSDynDNS.ps1','./Install-PSDynDNS.ps1')
+          $result = Invoke-Pester -Configuration $pesterConfig
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 tests failed.' }
-      - name: Windows PowerShell 5.1 integration test
-        shell: powershell
+          if ($null -eq $result.CodeCoverage -or $result.CodeCoverage.CoveragePercent -lt 75) { throw 'PowerShell 7 coverage below 75%.' }
+      - name: Package and verify release assets
         run: |
           $ErrorActionPreference = 'Stop'
-          & ./tests/Integration.Windows.ps1 -Runtime WindowsPowerShell
-      - name: PowerShell 7 integration test
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & ./tests/Integration.Windows.ps1 -Runtime PowerShell7
+          & ./tools/Build-ReleasePackage.ps1 -Version $env:VERSION
 
-      - name: Stamp release version after integration tests
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $path = Join-Path $PWD 'PSDynDNS.ps1'
-          $source = [IO.File]::ReadAllText($path)
-          $needle = [regex]::Escape("$" + "script:Version = '0.1.0-dev'")
-          if ([regex]::Matches($source, $needle).Count -ne 1) { throw 'Expected exactly one version placeholder.' }
-          $result = $source.Replace("$" + "script:Version = '0.1.0-dev'", "$" + "script:Version = '$env:VERSION'")
-          [IO.File]::WriteAllText($path, $result, (New-Object System.Text.UTF8Encoding($false)))
-          $tokens = $null
-          $parseErrors = $null
-          $null = [Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$parseErrors)
-          if ($parseErrors.Count) { throw 'Version-stamped release script failed PowerShell parsing.' }
-      - name: Package standalone files, zip and checksums
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
-          Copy-Item PSDynDNS.ps1,Install-PSDynDNS.ps1 -Destination dist
-          $zip = "dist/PSDynDNS-$env:TAG.zip"
-          Compress-Archive -Path PSDynDNS.ps1,Install-PSDynDNS.ps1,config.example.json,README.md,LICENSE -DestinationPath $zip -Force
-          $names = @('PSDynDNS.ps1','Install-PSDynDNS.ps1',("PSDynDNS-$env:TAG.zip"))
-          $lines = @($names | ForEach-Object {
-            $sum = (Get-FileHash (Join-Path dist $_) -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$sum  $_"
-          })
-          [IO.File]::WriteAllLines((Join-Path $PWD 'dist/SHA256SUMS.txt'),$lines,(New-Object Text.UTF8Encoding($false)))
       - name: Publish release (create draft first)
-        shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
           PRERELEASE: ${{ inputs.prerelease }}
