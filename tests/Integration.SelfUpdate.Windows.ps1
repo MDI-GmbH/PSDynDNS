@@ -70,8 +70,12 @@ function Invoke-CiUpdate {
     $env:PSDYNDNS_CI_PAYLOAD = $payload
     $env:PSDYNDNS_CI_DIGEST = if ($BadDigest) { '0000000000000000000000000000000000000000000000000000000000000000' } else { $new }
     try {
-        & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $client
+        # Native stdout must not become part of the function's return value.
+        # PowerShell 7's strict mode otherwise sees a string instead of
+        # the result object and reports missing properties like ExitCode.
+        $output = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $client 2>&1
         $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) { $output | ForEach-Object { Write-Host ([string]$_) } }
     } finally {
         Remove-Item Env:PSDYNDNS_CI_PAYLOAD,Env:PSDYNDNS_CI_DIGEST -ErrorAction SilentlyContinue
     }
@@ -138,8 +142,9 @@ function Move-Item {
 & $Helper -ParentPid 0 -Original $Original -Staged $Staged -Backup $Backup -Digest $Digest
 '@
     [IO.File]::WriteAllText($inject,$injection,$utf8)
-    & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $inject -Original $original -Staged $stage -Backup $backup -Helper $helper -Digest $stageHash
+    $rollbackOutput = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $inject -Original $original -Staged $stage -Backup $backup -Helper $helper -Digest $stageHash 2>&1
     $exit = $LASTEXITCODE
+    if ($exit -ne 0) { $rollbackOutput | ForEach-Object { Write-Host ([string]$_) } }
     Assert-Ci ($exit -ne 0) 'Injected second move forces helper failure'
     Assert-Ci (Test-Path -LiteralPath $original -PathType Leaf) 'Rollback restores original file'
     Assert-Ci ((Hash-Ci $original) -eq $originalHash) 'Rollback restores original bytes'
