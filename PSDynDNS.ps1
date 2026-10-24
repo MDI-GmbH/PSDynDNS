@@ -22,15 +22,18 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 $script:Version = '0.1.0-dev'
 $script:UserAgent = 'PSDynDNS/' + $script:Version
 
-# BEGIN GENERATED SHARED FUNCTIONS
-# Canonical implementation embedded into both standalone PowerShell scripts.
-# After editing, run: ./tools/Sync-Shared.ps1 -Update
 function Assert-PSDynDnsSettings {
     param($Cfg)
     $hostName = [string]$Cfg.Hostname
-    if ([string]::IsNullOrWhiteSpace($hostName) -or
-        $hostName -notmatch '^(?=.{1,253}$)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$') {
+    # DNS labels: 1-63 characters, no leading/trailing hyphens.
+    $labels = $hostName.Split('.')
+    if ($hostName.Length -gt 253 -or $labels.Count -lt 2) {
         throw 'Hostname must be a valid FQDN.'
+    }
+    foreach ($label in $labels) {
+        if ($label -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$') {
+            throw 'Hostname must be a valid FQDN.'
+        }
     }
     if (-not $Cfg.IPv4Enabled -and -not $Cfg.IPv6Enabled) { throw 'Enable IPv4 and/or IPv6.' }
     $urls = @('UpdateUrl')
@@ -49,7 +52,8 @@ function Assert-PSDynDnsSettings {
             throw 'UpdateCheckHours must be 1..720.'
         }
     }
-    if ($null -ne $Cfg.PSObject.Properties['UpdateChannel'] -and $Cfg.UpdateChannel -notin @('stable','beta','main')) {
+    if ($null -ne $Cfg.PSObject.Properties['UpdateChannel'] -and
+        $Cfg.UpdateChannel -notin @('stable','beta','main')) {
         throw 'Invalid UpdateChannel.'
     }
     if ($null -ne $Cfg.PSObject.Properties['DnsServers']) {
@@ -92,15 +96,6 @@ function Select-PSDynDnsRelease {
     return $candidates |
         Sort-Object -Property @{Expression='Version';Descending=$true},@{Expression='Rank';Descending=$true},@{Expression='PreNumber';Descending=$true} |
         Select-Object -First 1
-}
-# END GENERATED SHARED FUNCTIONS
-
-function Assert-HttpsUrl {
-    param([string]$Url)
-    $parsed = $null
-    if (-not [uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$parsed) -or $parsed.Scheme -ne 'https' -or -not $parsed.Host -or $parsed.UserInfo) {
-        throw 'An absolute HTTPS URL without embedded credentials is required.'
-    }
 }
 
 function Read-ClientConfig {
