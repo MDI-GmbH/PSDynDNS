@@ -98,7 +98,12 @@ function Assert-PSDynDnsSettings {
 function Select-PSDynDnsRelease {
     param([object[]]$Releases, [ValidateSet('stable','beta')][string]$Channel)
     $candidates = @()
-    foreach ($release in $Releases) {
+    # Invoke-RestMethod can return a JSON array as a single object[] on the
+    # pipeline (notably Windows PowerShell 5.1). Accept both API shapes.
+    $flatReleases = foreach ($item in $Releases) {
+        foreach ($release in @($item)) { $release }
+    }
+    foreach ($release in $flatReleases) {
         if ($release.draft -or ($Channel -eq 'stable' -and $release.prerelease)) { continue }
         $tag = [string]$release.tag_name
         if ($tag -notmatch '^v?(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)\.(\d+))?$') { continue }
@@ -355,7 +360,8 @@ function Install-ClientFile {
         $url = if ($Channel -eq 'beta') {
             'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases?per_page=100'
         } else { 'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases/latest' }
-        $releases = @(Invoke-RestMethod -Uri $url -Headers @{'User-Agent'='PSDynDNS-Installer'} -TimeoutSec 20)
+        $apiResponse = Invoke-RestMethod -Uri $url -Headers @{'User-Agent'='PSDynDNS-Installer'} -TimeoutSec 20
+        $releases = @($apiResponse)
         $release = Select-PSDynDnsRelease -Releases $releases -Channel $Channel
         $expected = $release.Sha256
         $temp = Join-Path $env:TEMP ('PSDynDNS-' + [guid]::NewGuid().ToString('N') + '.ps1')

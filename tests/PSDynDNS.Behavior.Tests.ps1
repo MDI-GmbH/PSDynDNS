@@ -52,6 +52,52 @@ Describe 'State, HTTP and configuration regression tests' {
     }
 }
 Describe 'Shared semantic release selection' {
+    It 'accepts an Invoke-RestMethod-style nested array and retains the full asset digest' {
+        $oldDigest = ('a' * 64)
+        $newDigest = ('b' * 64)
+        $old = [pscustomobject]@{
+            tag_name='v0.1.0-beta.1'; draft=$false; prerelease=$true
+            assets=@([pscustomobject]@{
+                name='PSDynDNS.ps1'; digest=('sha256:' + $oldDigest)
+                browser_download_url='https://github.com/MDI-GmbH/PSDynDNS/releases/download/v0.1.0-beta.1/PSDynDNS.ps1'
+            })
+        }
+        $new = [pscustomobject]@{
+            tag_name='v0.1.0-beta.2'; draft=$false; prerelease=$true
+            assets=@([pscustomobject]@{
+                name='PSDynDNS.ps1'; digest=('sha256:' + $newDigest)
+                browser_download_url='https://github.com/MDI-GmbH/PSDynDNS/releases/download/v0.1.0-beta.2/PSDynDNS.ps1'
+            })
+        }
+        # Model the nested object[] returned by Invoke-RestMethod inside @(...).
+        $nested = New-Object 'object[]' 1
+        $nested[0] = @($new, $old)
+
+        $candidate = Select-PSDynDnsRelease -Releases $nested -Channel beta
+        $candidate.Tag | Should -Be 'v0.1.0-beta.2'
+        $candidate.Sha256 | Should -Be $newDigest
+        $candidate.Url | Should -Be $new.assets[0].browser_download_url
+
+        # Also exercise the installer's own standalone selection function.
+        $installer = Join-Path $PSScriptRoot '..\Install-PSDynDNS.ps1'
+        $tokens = $null
+        $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            $installer, [ref]$tokens, [ref]$errors)
+        $errors.Count | Should -Be 0
+        $definitions = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Select-PSDynDnsRelease'
+        }, $true))
+        $definitions.Count | Should -Be 1
+        # Evaluate only this local function definition, without executing the installer.
+        $function = [scriptblock]::Create($definitions[0].Extent.Text)
+        . $function
+        $candidate = Select-PSDynDnsRelease -Releases $nested -Channel beta
+        $candidate.Tag | Should -Be 'v0.1.0-beta.2'
+        $candidate.Sha256 | Should -Be $newDigest
+    }
     It 'selects the highest version rather than the first GitHub API result' {
         $digest = 'sha256:' + ('a' * 64)
         $asset = [pscustomobject]@{
