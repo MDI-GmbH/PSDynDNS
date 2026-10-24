@@ -224,6 +224,8 @@ try {
                 '-Runtime',$Runtime
             )
             $script:Installed = $true
+            $initialConfig = Get-Content -LiteralPath (Join-Path $script:InstallRoot 'config.json') -Raw | ConvertFrom-Json
+            Assert-Equal $initialConfig.AllowAutomaticConfigUpdates $true 'New installations explicitly opt in to future config updates'
             Assert-True (Test-Path -LiteralPath (Join-Path $script:InstallRoot 'app\PSDynDNS.ps1')) 'Client script installed'
             Assert-True (Test-Path -LiteralPath (Join-Path $script:InstallRoot 'runtime\state.json')) 'Runtime state initialized'
             Assert-Equal (Read-InstalledSecret) $script:CiSecret 'Installer stores a decryptable machine DPAPI secret'
@@ -260,13 +262,15 @@ try {
                 '-UpdateChannel','beta',
                 '-DnsServers','1.1.1.1',
                 '-IntervalMinutes','15',
-                '-UpdateCheckHours','12'
+                '-UpdateCheckHours','12',
+                '-AllowAutomaticConfigUpdates','False'
             )
             $config = Get-Content -LiteralPath (Join-Path $script:InstallRoot 'config.json') -Raw | ConvertFrom-Json
             Assert-Equal $config.Hostname 'ci-changed.example.invalid' 'Configure updates the host'
             Assert-Equal $config.IPv4Enabled $false 'Configure disables IPv4'
             Assert-Equal $config.IPv6Enabled $true 'Configure enables IPv6'
             Assert-Equal $config.UpdateChannel 'beta' 'Configure sets update channel'
+            Assert-Equal $config.AllowAutomaticConfigUpdates $false 'Configure can explicitly disable future config updates'
             Assert-Equal @($config.DnsServers)[0] '1.1.1.1' 'Configure updates DNS server list'
             Assert-True (-not (@($config.PSObject.Properties | ForEach-Object { $_.Name }) -contains 'IntervalMinutes')) 'Task interval is not stored in JSON'
             $task = Get-ScheduledTask -TaskName $script:TaskName
@@ -281,6 +285,8 @@ try {
             Assert-True (-not $probe.CanWriteSecret) 'Task cannot modify secret'
 
             Invoke-Installer -Arguments @('-Repair')
+            $repairedConfig = Get-Content -LiteralPath (Join-Path $script:InstallRoot 'config.json') -Raw | ConvertFrom-Json
+            Assert-Equal $repairedConfig.AllowAutomaticConfigUpdates $false 'Repair retains explicit config update opt-out'
             $task = Get-ScheduledTask -TaskName $script:TaskName
             Assert-True (([string]$task.Actions[0].Arguments -match 'PSDynDNS[.]ps1')) 'Repair restores real client task action'
             Assert-Equal (Read-InstalledSecret) $script:CiSecret 'Repair preserves credentials'

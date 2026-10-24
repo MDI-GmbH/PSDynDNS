@@ -18,6 +18,7 @@ param(
     [Nullable[int]]$IntervalMinutes,
     [ValidateSet('WindowsPowerShell','PowerShell7')][string]$Runtime,
     [Nullable[bool]]$AutoUpdate,
+    [Nullable[bool]]$AllowAutomaticConfigUpdates,
     [ValidateSet('stable','beta','main')][string]$UpdateChannel,
     [Nullable[int]]$UpdateCheckHours,
     [string]$LocalClientPath,
@@ -203,14 +204,19 @@ function Apply-Settings {
     param($Cfg)
     foreach ($name in @(
         'Hostname', 'Username', 'UpdateUrl', 'IPv4Enabled', 'IPv6Enabled',
-        'IPv4CheckUrl', 'IPv6CheckUrl', 'AutoUpdate', 'UpdateCheckHours',
-        'UpdateChannel', 'DnsServers'
+        'IPv4CheckUrl', 'IPv6CheckUrl', 'AutoUpdate', 'AllowAutomaticConfigUpdates',
+        'UpdateCheckHours', 'UpdateChannel', 'DnsServers'
     )) {
         # Use only explicitly supplied script arguments. An unspecified typed
         # [string] parameter can otherwise appear as an empty string and
         # erase defaults such as the DynDNS HTTPS endpoint.
         if ($script:InstallerBoundParameters.ContainsKey($name)) {
-            $Cfg.$name = $script:InstallerBoundParameters[$name]
+            $value = $script:InstallerBoundParameters[$name]
+            if ($null -eq $Cfg.PSObject.Properties[$name]) {
+                Add-Member -InputObject $Cfg -NotePropertyName $name -NotePropertyValue $value
+            } else {
+                $Cfg.$name = $value
+            }
         }
     }
     return $Cfg
@@ -312,7 +318,8 @@ switch ($PSCmdlet.ParameterSetName) {
             IPv4Enabled=$true; IPv6Enabled=$false
             IPv4CheckUrl='https://ipv4.nsupdate.info/myip'
             IPv6CheckUrl='https://ipv6.nsupdate.info/myip'
-            AutoUpdate=$false; UpdateCheckHours=24; UpdateChannel='stable'; DnsServers=@('8.8.8.8','8.8.4.4')
+            AutoUpdate=$false; AllowAutomaticConfigUpdates=$true
+            UpdateCheckHours=24; UpdateChannel='stable'; DnsServers=@('8.8.8.8','8.8.4.4')
         }
         $cfg = Apply-Settings $cfg
         Install-ClientFile -Source $LocalClientPath -Channel $cfg.UpdateChannel
@@ -331,8 +338,8 @@ switch ($PSCmdlet.ParameterSetName) {
     Configure {
         $settings = @(
             'Hostname', 'Username', 'UpdateUrl', 'IPv4Enabled', 'IPv6Enabled',
-            'IPv4CheckUrl', 'IPv6CheckUrl', 'AutoUpdate', 'UpdateCheckHours',
-            'UpdateChannel', 'DnsServers', 'IntervalMinutes', 'Runtime'
+            'IPv4CheckUrl', 'IPv6CheckUrl', 'AutoUpdate', 'AllowAutomaticConfigUpdates',
+            'UpdateCheckHours', 'UpdateChannel', 'DnsServers', 'IntervalMinutes', 'Runtime'
         )
         if (@($settings | Where-Object { $script:InstallerBoundParameters.ContainsKey($_) }).Count -eq 0) {
             throw 'No settings supplied. Pass the settings to change or use -Help.'

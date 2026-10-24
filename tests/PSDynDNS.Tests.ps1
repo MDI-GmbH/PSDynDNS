@@ -50,6 +50,24 @@ Describe 'PSDynDNS DynDNS2 protocol' {
     }
 }
 
+Describe 'Future automatic configuration opt-in' {
+    It 'permits only an explicitly enabled boolean value' {
+        (Test-AutomaticConfigUpdatesAllowed ([pscustomobject]@{
+            AllowAutomaticConfigUpdates = $true
+        })) | Should -BeTrue
+    }
+    It 'denies disabled, absent, and malformed opt-in values' {
+        foreach ($cfg in @(
+            [pscustomobject]@{ AllowAutomaticConfigUpdates = $false },
+            [pscustomobject]@{},
+            [pscustomobject]@{ AllowAutomaticConfigUpdates = 'true' },
+            [pscustomobject]@{ AllowAutomaticConfigUpdates = $null }
+        )) {
+            (Test-AutomaticConfigUpdatesAllowed $cfg) | Should -BeFalse
+        }
+    }
+}
+
 Describe 'IP address validation' {
     It 'accepts global IPv4 and IPv6 candidates' {
         Test-PublicIp ([Net.IPAddress]::Parse('8.8.8.8')) | Should -BeTrue

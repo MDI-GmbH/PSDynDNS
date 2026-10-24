@@ -34,7 +34,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($file in @('PSDynDNS.ps1','Install-PSDynDNS.ps1','tools/Test-WindowsValidation.ps1')) {
+          foreach ($file in @('PSDynDNS.ps1','Install-PSDynDNS.ps1')) {
             $tokens = $null
             $parseErrors = $null
             $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file), [ref]$tokens, [ref]$parseErrors)

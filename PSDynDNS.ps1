@@ -108,6 +108,18 @@ function Read-ClientConfig {
     return $cfg
 }
 
+# Future automatic edits to config.json must use this explicit opt-in guard.
+# Missing, malformed, and false values deny automatic configuration changes.
+function Test-AutomaticConfigUpdatesAllowed {
+    param($Config)
+    return (
+        $null -ne $Config -and
+        $null -ne $Config.PSObject.Properties['AllowAutomaticConfigUpdates'] -and
+        $Config.AllowAutomaticConfigUpdates -is [bool] -and
+        $Config.AllowAutomaticConfigUpdates -eq $true
+    )
+}
+
 function Get-ConfigurationFingerprint {
     param($Config)
     $username = if ($null -ne $Config.PSObject.Properties['Username']) { [string]$Config.Username } else { '' }

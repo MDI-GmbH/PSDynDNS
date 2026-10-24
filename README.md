@@ -63,6 +63,8 @@ The installer asks for the DynDNS secret interactively. The scheduler interval i
 
 Runtime defaults to Windows PowerShell 5.1; DNS resolvers default to `8.8.8.8` and `8.8.4.4`. Both can be changed through the installer.
 
+New installations explicitly set `AllowAutomaticConfigUpdates` to `true`. Set it to `false` with `-AllowAutomaticConfigUpdates $false` to decline any **future** automatic edits of `config.json`. Existing installations without the option remain opted out until an administrator explicitly enables it. This setting does not change config files or NTFS permissions today.
+
 ## Update channels
 
 Configure the updater using the installer:
@@ -93,6 +95,7 @@ Installer (requires Administrator rights). Existing installations can be reconfi
 | `-Runtime` | `WindowsPowerShell` or `PowerShell7` |
 | `-IntervalMinutes` | Task interval (default: 10; not in JSON) |
 | `-AutoUpdate`, `-UpdateChannel`, `-UpdateCheckHours` | Software update settings |
+| `-AllowAutomaticConfigUpdates` | Opt in/out of future automatic config changes |
 | `-SetKey` | Replace DPAPI-protected secret |
 | `-Repair`, `-ResetState` | Repair installation or reset runtime state |
 | `-Uninstall [-Purge]` | Uninstall; optionally delete all data |
@@ -145,10 +148,6 @@ C:\ProgramData\PSDynDNS\
 ~~~
 
 The task identity may write to `app` and `runtime`, but should only read `config.json` and `secret.dpapi`. Machine-scope DPAPI is not a substitute for correct NTFS access controls.
-
-### Windows installation validation
-
-Run `tools/Test-WindowsValidation.ps1` as Administrator on a test machine. By default it checks installation, task identity and script syntax without changing DNS or the task. Use `-ProbeLocalService` during a maintenance window to temporarily test the real task token, ACLs and DPAPI; its original task action is restored. `-TestUpdateRollback` runs the isolated Pester test; `-LiveDnsUpdate` explicitly contacts the configured provider and may change DNS.
 
 ## Development and releases
 
