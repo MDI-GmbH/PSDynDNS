@@ -8,12 +8,17 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ConfigPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'config.json'),
+    [string]$ConfigPath,
     [switch]$ForceDnsUpdate
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+# Resolve the default only after PowerShell has initialized script-path variables.
+# During parameter default evaluation, $PSScriptRoot may still be empty.
+if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+    $ConfigPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'config.json'
+}
 $script:Version = '0.1.0-dev'
 $script:UserAgent = 'PSDynDNS/' + $script:Version
 
@@ -226,7 +231,10 @@ try {
 '@
         $helperPath = $target + '.swap.ps1'
         [IO.File]::WriteAllText($helperPath, $helper, (New-Object Text.UTF8Encoding($false)))
-        $exe = Join-Path $PSHOME 'powershell.exe'
+        # PowerShell 7 installs pwsh.exe, not powershell.exe, in $PSHOME.
+        # The helper must run in the same edition as the client.
+        $exeName = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
+        $exe = Join-Path $PSHOME $exeName
         $args = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ParentPid {1} -Original "{2}" -Staged "{3}" -Backup "{4}" -Digest "{5}"' -f $helperPath,$PID,$target,$newFile,$backup,$Release.Sha256
         Start-Process -FilePath $exe -ArgumentList $args -WindowStyle Hidden | Out-Null
     } catch {
