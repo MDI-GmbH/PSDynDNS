@@ -109,6 +109,7 @@ jobs:
           $pesterConfig.CodeCoverage.Path = @('./PSDynDNS.ps1','./Install-PSDynDNS.ps1')
           $result = Invoke-Pester -Configuration $pesterConfig
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'Pester suite failed.' }
+          if ($null -eq $result.CodeCoverage -or $result.CodeCoverage.CoveragePercent -lt 75) { throw 'Windows PowerShell 5.1 coverage below 75%.' }
       - name: Install Pester for PowerShell 7
         run: |
           $ErrorActionPreference = 'Stop'
@@ -127,74 +128,11 @@ jobs:
           $pesterConfig.CodeCoverage.Path = @('./PSDynDNS.ps1','./Install-PSDynDNS.ps1')
           $result = Invoke-Pester -Configuration $pesterConfig
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 tests failed.' }
-      - name: Stamp release version after complete Pester suite
+          if ($null -eq $result.CodeCoverage -or $result.CodeCoverage.CoveragePercent -lt 75) { throw 'PowerShell 7 coverage below 75%.' }
+      - name: Package and verify release assets
         run: |
           $ErrorActionPreference = 'Stop'
-          $path = Join-Path $PWD 'PSDynDNS.ps1'
-          $source = [IO.File]::ReadAllText($path)
-          $needle = [regex]::Escape("$" + "script:Version = '0.1.0-dev'")
-          if ([regex]::Matches($source, $needle).Count -ne 1) { throw 'Expected exactly one version placeholder.' }
-          $result = $source.Replace("$" + "script:Version = '0.1.0-dev'", "$" + "script:Version = '$env:VERSION'")
-          [IO.File]::WriteAllText($path, $result, (New-Object System.Text.UTF8Encoding($false)))
-          $tokens = $null
-          $parseErrors = $null
-          $null = [Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$parseErrors)
-          if ($parseErrors.Count) { throw 'Version-stamped release script failed PowerShell parsing.' }
-      - name: Package standalone files, zip and checksums
-        run: |
-          $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
-          Copy-Item PSDynDNS.ps1,Install-PSDynDNS.ps1 -Destination dist
-          $zip = "dist/PSDynDNS-$env:TAG.zip"
-          Compress-Archive -Path PSDynDNS.ps1,Install-PSDynDNS.ps1,config.example.json,README.md,LICENSE -DestinationPath $zip -Force
-          $names = @('PSDynDNS.ps1','Install-PSDynDNS.ps1',("PSDynDNS-$env:TAG.zip"))
-          $lines = @($names | ForEach-Object {
-            $sum = (Get-FileHash (Join-Path dist $_) -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$sum  $_"
-          })
-          [IO.File]::WriteAllLines((Join-Path $PWD 'dist/SHA256SUMS.txt'),$lines,(New-Object Text.UTF8Encoding($false)))
-      - name: Verify final release artifacts
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $expected = $env:VERSION
-          $tag = $env:TAG
-          $client = Join-Path $PWD 'dist/PSDynDNS.ps1'
-          $zipPath = Join-Path $PWD ("dist/PSDynDNS-$tag.zip")
-          $contents = [IO.File]::ReadAllText($client)
-          $matchingLines = @($contents -split "[`r`n]+" | Where-Object {
-            $_ -match '^\$script:Version\s*='
-          })
-          $expectedLine = '$script:Version = ' + [char]39 + $expected + [char]39
-          if ($matchingLines.Count -ne 1 -or $matchingLines[0] -cne $expectedLine) {
-            throw "Release asset version must be exactly $expected."
-          }
-          Add-Type -AssemblyName System.IO.Compression.ZipFile
-          $zip = [IO.Compression.ZipFile]::OpenRead($zipPath)
-          try {
-            $entry = @($zip.Entries | Where-Object { $_.FullName -eq 'PSDynDNS.ps1' })
-            if ($entry.Count -ne 1) { throw 'Release ZIP must include exactly one PSDynDNS.ps1.' }
-            $stream = $entry[0].Open()
-            $memory = New-Object IO.MemoryStream
-            try { $stream.CopyTo($memory); $zipBytes = $memory.ToArray() }
-            finally { $stream.Dispose(); $memory.Dispose() }
-            $assetBytes = [IO.File]::ReadAllBytes($client)
-            $sha = [Security.Cryptography.SHA256]::Create()
-            try {
-              $assetHash = [Convert]::ToBase64String($sha.ComputeHash($assetBytes))
-              $zipHash = [Convert]::ToBase64String($sha.ComputeHash($zipBytes))
-            } finally { $sha.Dispose() }
-            if ($assetHash -ne $zipHash) {
-              throw 'Release ZIP contains different client bytes from standalone asset.'
-            }
-          } finally { $zip.Dispose() }
-          $manifest = @(Get-Content -LiteralPath 'dist/SHA256SUMS.txt' -Encoding UTF8)
-          foreach ($name in @('PSDynDNS.ps1','Install-PSDynDNS.ps1',"PSDynDNS-$tag.zip")) {
-            $actual = (Get-FileHash -LiteralPath (Join-Path 'dist' $name) -Algorithm SHA256).Hash.ToLowerInvariant()
-            if (@($manifest | Where-Object { $_ -ceq "$actual  $name" }).Count -ne 1) {
-              throw "SHA256SUMS.txt verification failed: $name."
-            }
-          }
-          Write-Host "Release artifact validated: $expected"
+          & ./tools/Build-ReleasePackage.ps1 -Version $env:VERSION
 
       - name: Publish release (create draft first)
         env:

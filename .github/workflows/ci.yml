@@ -21,6 +21,9 @@ concurrency:
 jobs:
   tests-ps51:
     name: tests-ps51
+    permissions:
+      contents: read
+      id-token: write
     runs-on: windows-2022
     timeout-minutes: 12
     steps:
@@ -79,8 +82,25 @@ jobs:
           flags: ps51
           use_oidc: true
           fail_ci_if_error: false
+      - name: Preserve PowerShell 5.1 coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-ps51
+          path: coverage-ps51.xml
+          if-no-files-found: error
+      - name: Upload PowerShell 5.1 coverage
+        uses: codecov/codecov-action@v6
+        with:
+          files: ./coverage-ps51.xml
+          flags: ps51
+          disable_search: true
+          use_oidc: true
+          fail_ci_if_error: false
   tests-ps7:
     name: tests-ps7
+    permissions:
+      contents: read
+      id-token: write
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
@@ -124,6 +144,48 @@ jobs:
           flags: ps7
           use_oidc: true
           fail_ci_if_error: false
+      - name: Preserve PowerShell 7 coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-ps7
+          path: coverage-ps7.xml
+          if-no-files-found: error
+      - name: Upload PowerShell 7 coverage
+        uses: codecov/codecov-action@v6
+        with:
+          files: ./coverage-ps7.xml
+          flags: ps7
+          disable_search: true
+          use_oidc: true
+          fail_ci_if_error: false
+
+  release-package-check:
+    name: release-package-check
+    needs: [tests-ps51, tests-ps7]
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dry-run release packaging and tamper test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./tools/Build-ReleasePackage.ps1 -Version '0.1.0-beta.999'
+          $asset = (Resolve-Path 'dist/PSDynDNS.ps1').Path
+          $original = [IO.File]::ReadAllBytes($asset)
+          try {
+            [IO.File]::AppendAllText($asset, "`n# tampered")
+            $rejected = $false
+            try {
+              & ./tools/Build-ReleasePackage.ps1 -Version '0.1.0-beta.999' -VerifyOnly
+            } catch {
+              $rejected = $true
+            }
+            if (-not $rejected) { throw 'Tampered asset unexpectedly passed verification.' }
+          } finally {
+            [IO.File]::WriteAllBytes($asset, $original)
+          }
+
   build:
     name: build
     needs: [tests-ps51, tests-ps7]

@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/MDI-GmbH/PSDynDNS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MDI-GmbH/PSDynDNS/actions/workflows/ci.yml)
 [![Coverage (dev)](https://codecov.io/gh/MDI-GmbH/PSDynDNS/branch/dev/graph/badge.svg)](https://codecov.io/gh/MDI-GmbH/PSDynDNS/tree/dev)
+[![Coverage (dev)](https://codecov.io/gh/MDI-GmbH/PSDynDNS/branch/dev/graph/badge.svg)](https://app.codecov.io/gh/MDI-GmbH/PSDynDNS/tree/dev)
 [![Release](https://img.shields.io/github/v/release/MDI-GmbH/PSDynDNS?include_prereleases&label=release)](https://github.com/MDI-GmbH/PSDynDNS/releases)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Windows PowerShell 5.1](https://img.shields.io/badge/Windows%20PowerShell-5.1-5391FE)
@@ -150,6 +151,8 @@ The task identity may write to `app` and `runtime`, but should only read `config
 
 - **Development:** Changes are reviewed via pull requests before merging into `main`.
 - **CI:** [PowerShell CI](.github/workflows/ci.yml) runs Pester in parallel under Windows PowerShell 5.1 and PowerShell 7; only after both succeed do isolated Windows installation integration tests run **for both runtimes**. New PR commits cancel older in-progress CI runs for the same PR.
+- **Coverage:** Both runtimes must achieve at least 75%; JaCoCo reports are uploaded to Codecov and retained as CI artifacts.
+- **Release verification:** CI builds and validates a test release package without publishing.
 - **Build:** Successful tests on `main` produce a ZIP and checksums.
 - **Publishing:** Manually start [Publish Release](.github/workflows/release.yml) on `main`, specify e.g. `0.2.0` (stable) or `0.3.0-beta.1` (pre-release). The release workflow runs tests and prepares assets and automatically generated notes before publication.
 
