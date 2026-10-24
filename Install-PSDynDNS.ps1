@@ -4,6 +4,7 @@ param(
     [Parameter(ParameterSetName='Install')][switch]$Install,
     [Parameter(ParameterSetName='Configure')][switch]$Configure,
     [Parameter(ParameterSetName='Repair',Mandatory=$true)][switch]$Repair,
+    [Parameter(ParameterSetName='UpdateClient',Mandatory=$true)][switch]$UpdateClient,
     [Parameter(ParameterSetName='SetKey',Mandatory=$true)][switch]$SetKey,
     [Parameter(ParameterSetName='Uninstall',Mandatory=$true)][switch]$Uninstall,
     [Parameter(ParameterSetName='Uninstall')][switch]$Purge,
@@ -337,14 +338,17 @@ function Get-ExistingTaskInterval {
     return 10
 }
 function Install-ClientFile {
-    param([string]$Source,[ValidateSet('stable','beta','main')][string]$Channel='stable')
-    $destination = Join-Path $script:App 'PSDynDNS.ps1'
+    param(
+        [string]$Source,
+        [ValidateSet('stable','beta','main')][string]$Channel='stable',
+        [string]$Destination=(Join-Path $script:App 'PSDynDNS.ps1')
+    )
     if ($Source) {
         if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) { throw 'Local client file not found.' }
         $tokens = $null; $errors = $null
         $null = [Management.Automation.Language.Parser]::ParseFile((Resolve-Path -LiteralPath $Source).Path,[ref]$tokens,[ref]$errors)
         if ($errors.Count) { throw 'Local client script has syntax errors.' }
-        Copy-Item -LiteralPath $Source -Destination $destination -Force
+        Copy-Item -LiteralPath $Source -Destination $Destination -Force
     } else {
         # Only official release assets are accepted. Development can use -LocalClientPath.
         if ($Channel -eq 'main') { throw 'Installing main directly requires -LocalClientPath; stable or beta needs a published GitHub Release.' }
@@ -361,10 +365,10 @@ function Install-ClientFile {
             $errors = $null
             $null = [Management.Automation.Language.Parser]::ParseFile($temp,[ref]$null,[ref]$errors)
             if ($errors.Count) { throw 'Downloaded PowerShell file contains syntax errors.' }
-            Copy-Item -LiteralPath $temp -Destination $destination -Force
+            Copy-Item -LiteralPath $temp -Destination $Destination -Force
         } finally { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
     }
-    Set-ProtectedAcl $destination -ClientRead
+    Set-ProtectedAcl $Destination -ClientRead
 }
 Assert-Admin
 if (-not $PSVersionTable.PSVersion -or $PSVersionTable.PSVersion -lt [version]'5.1') { throw 'PowerShell 5.1 or 7+ is required.' }
@@ -426,6 +430,90 @@ switch ($PSCmdlet.ParameterSetName) {
         Ensure-Directories
         Protect-InstalledFiles
         Write-Host 'PSDynDNS repaired.'
+    }
+    UpdateClient {
+        # An explicit administrator operation, independent of AutoUpdate.
+        # Only the executable is changed; configuration, secret, state,
+        # task action and schedule are preserved.
+        $cfg = Read-Settings
+        $channel = if ($script:InstallerBoundParameters.ContainsKey('UpdateChannel')) {
+            $UpdateChannel
+        } elseif ($cfg.PSObject.Properties['UpdateChannel']) {
+            [string]$cfg.UpdateChannel
+        } else { 'stable' }
+        if (-not (Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue)) {
+            throw 'Scheduled task missing. Run -Repair before updating.'
+        }
+
+        $client = Join-Path $script:App 'PSDynDNS.ps1'
+        if (-not (Test-Path -LiteralPath $client -PathType Leaf)) {
+            throw 'Installed client missing. Run -Repair first.'
+        }
+        if ($LocalClientPath) {
+            $resolved = (Resolve-Path -LiteralPath $LocalClientPath -ErrorAction Stop).Path
+            if ([string]::Equals($resolved, $client, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'The update source must differ from the installed client file.'
+            }
+        }
+
+        $staged = $client + '.manual.new'
+        if (Test-Path -LiteralPath $staged) {
+            throw 'An earlier manual update staging file exists; inspect it before retrying.'
+        }
+        $backup = $client + '.manual-' +
+            (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' +
+            [guid]::NewGuid().ToString('N') + '.bak'
+        $taskDisabledByUs = $false
+        $replaced = $false
+        try {
+            # Download, SHA-256 verification (release), and syntax validation
+            # happen before the Scheduled Task is touched.
+            Install-ClientFile -Source $LocalClientPath -Channel $channel -Destination $staged
+            $expectedHash = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash
+
+            $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop
+            if ($task.State -ne 'Disabled') {
+                Disable-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop | Out-Null
+                $taskDisabledByUs = $true
+            }
+            if ((Get-ScheduledTask -TaskName $script:TaskName).State -eq 'Running') {
+                Stop-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop
+            }
+            $stopped = $false
+            for ($i = 0; $i -lt 60; $i++) {
+                if ((Get-ScheduledTask -TaskName $script:TaskName).State -ne 'Running') {
+                    $stopped = $true
+                    break
+                }
+                Start-Sleep -Milliseconds 500
+            }
+            if (-not $stopped) { throw 'Scheduled Task did not stop; update aborted.' }
+
+            # Ensure older installations also receive the latest app ACLs.
+            Ensure-Directories
+            [IO.File]::Replace($staged, $client, $backup)
+            $replaced = $true
+            Set-ProtectedAcl $client -ClientRead
+            if ((Get-FileHash -LiteralPath $client -Algorithm SHA256).Hash -ne $expectedHash) {
+                throw 'Installed client hash differs from verified update.'
+            }
+            Write-Host ('PSDynDNS client updated. Previous version: ' + $backup)
+        } catch {
+            if ($replaced) {
+                try {
+                    Copy-Item -LiteralPath $backup -Destination $client -Force -ErrorAction Stop
+                    Set-ProtectedAcl $client -ClientRead
+                } catch {
+                    Write-Warning ('Manual update rollback failed: ' + $_.Exception.Message)
+                }
+            }
+            throw
+        } finally {
+            Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+            if ($taskDisabledByUs) {
+                Enable-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop | Out-Null
+            }
+        }
     }
     SetKey {
         if (-not (Test-Path -LiteralPath $script:ConfigPath)) { throw 'Install first.' }

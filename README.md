@@ -57,11 +57,13 @@ The installer asks for the DynDNS secret interactively. The scheduler interval i
 | Command | Result |
 | --- | --- |
 | `.\Install-PSDynDNS.ps1 -Repair` | Restore the task and configured permissions |
+| `.\Install-PSDynDNS.ps1 -UpdateClient -UpdateChannel beta` | Manually install the latest available beta release |
+| `.\Install-PSDynDNS.ps1 -UpdateClient -LocalClientPath .\PSDynDNS.ps1` | Manually install a local client file |
 | `.\Install-PSDynDNS.ps1 -ResetState` | Reset cached address and blocked state |
 | `.\Install-PSDynDNS.ps1 -Uninstall` | Remove executable and task, retain configuration |
 | `.\Install-PSDynDNS.ps1 -Uninstall -Purge` | Remove installation including configuration and secret |
 
-Runtime defaults to Windows PowerShell 5.1; DNS resolvers default to `8.8.8.8` and `8.8.4.4`. Both can be changed through the installer.
+Runtime defaults to Windows PowerShell 5.1; DNS resolvers default to `8.8.8.8` and `8.8.4.4`. Both can be changed through the installer. Manual `-UpdateClient` uses the configured update channel unless overridden; it validates the replacement, temporarily stops the Scheduled Task, keeps a timestamped backup and restores the prior task state. It does not modify configuration, DPAPI secrets, or automatic-update preferences.
 
 New installations explicitly set `AllowAutomaticConfigUpdates` to `true`. Set it to `false` with `-AllowAutomaticConfigUpdates $false` to decline any **future** automatic edits of `config.json`. Existing installations without the option remain opted out until an administrator explicitly enables it. This setting does not change config files or NTFS permissions today.
 
@@ -98,6 +100,7 @@ Installer (requires Administrator rights). Existing installations can be reconfi
 | `-AllowAutomaticConfigUpdates` | Opt in/out of future automatic config changes |
 | `-SetKey` | Replace DPAPI-protected secret |
 | `-Repair`, `-ResetState` | Repair installation or reset runtime state |
+| `-UpdateClient [-UpdateChannel beta] [-LocalClientPath <path>]` | Manually update an existing installation |
 | `-Uninstall [-Purge]` | Uninstall; optionally delete all data |
 | `-LocalClientPath` | Install local client file |
 | `-CredentialSecret` | SecureString for unattended setup |

@@ -46,7 +46,7 @@ Describe 'PSDynDNS installation, task isolation and lifecycle' -Tag 'Integration
             param([string[]]$Arguments)
             # PowerShell string-array splatting treats '-Install' as a positional string.
             # Convert the test's name/value arguments into a true named-parameter hashtable.
-            $switches = @('Install','Configure','Repair','SetKey','ResetState','Uninstall','Purge')
+            $switches = @('Install','Configure','Repair','UpdateClient','SetKey','ResetState','Uninstall','Purge')
             $params = @{}
             for ($i=0; $i -lt $Arguments.Count; $i++) {
                 $token = $Arguments[$i]
@@ -270,6 +270,45 @@ try {
                 (New-Object Security.Principal.NTAccount($principalName)).Translate([Security.Principal.SecurityIdentifier]).Value
             }
             Assert-Equal $principalSid 'S-1-5-19' 'Scheduled task uses language-neutral LOCAL SERVICE SID'
+
+            # Explicit manual update of an already installed client. No
+            # provider/network calls and no modification of config or DPAPI.
+            $installedClient = Join-Path $script:InstallRoot 'app\PSDynDNS.ps1'
+            $originalHash = (Get-FileHash -LiteralPath $installedClient -Algorithm SHA256).Hash
+            $configHash = (Get-FileHash -LiteralPath (Join-Path $script:InstallRoot 'config.json') -Algorithm SHA256).Hash
+            $secretHash = (Get-FileHash -LiteralPath (Join-Path $script:InstallRoot 'secret.dpapi') -Algorithm SHA256).Hash
+            $badClient = Join-Path $env:TEMP ('PSDynDNS-CI-Bad-' + [guid]::NewGuid().ToString('N') + '.ps1')
+            $candidate = Join-Path $env:TEMP ('PSDynDNS-CI-New-' + [guid]::NewGuid().ToString('N') + '.ps1')
+            try {
+                [IO.File]::WriteAllText($badClient, 'function NeverClosed {')
+                $rejected = $false
+                try {
+                    Invoke-Installer -Arguments @('-UpdateClient','-LocalClientPath',$badClient)
+                } catch { $rejected = $true }
+                Assert-True $rejected 'Manual update rejects invalid PowerShell source'
+                Assert-Equal (Get-FileHash -LiteralPath $installedClient -Algorithm SHA256).Hash $originalHash 'Rejected update retains old client'
+                Assert-True ((Get-ScheduledTask -TaskName $script:TaskName).State -ne 'Disabled') 'Rejected update leaves task enabled'
+                Assert-True (-not (Test-Path -LiteralPath ($installedClient + '.manual.new'))) 'Rejected update removes staging file'
+
+                $candidateText = [IO.File]::ReadAllText($script:Source) + [Environment]::NewLine + '# CI manual update marker'
+                [IO.File]::WriteAllText($candidate, $candidateText, (New-Object Text.UTF8Encoding($false)))
+                Invoke-Installer -Arguments @('-UpdateClient','-LocalClientPath',$candidate)
+                $candidateHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash
+                Assert-Equal (Get-FileHash -LiteralPath $installedClient -Algorithm SHA256).Hash $candidateHash 'Manual update replaces the client'
+                $backups = @(Get-ChildItem -LiteralPath (Join-Path $script:InstallRoot 'app') -Filter 'PSDynDNS.ps1.manual-*.bak')
+                Assert-True ($backups.Count -ge 1) 'Manual update retains a backup'
+                Assert-Equal (Get-FileHash -LiteralPath $backups[-1].FullName -Algorithm SHA256).Hash $originalHash 'Manual backup contains the prior client'
+                Assert-Equal (Get-FileHash -LiteralPath (Join-Path $script:InstallRoot 'config.json') -Algorithm SHA256).Hash $configHash 'Manual update leaves configuration unchanged'
+                Assert-Equal (Get-FileHash -LiteralPath (Join-Path $script:InstallRoot 'secret.dpapi') -Algorithm SHA256).Hash $secretHash 'Manual update leaves secret unchanged'
+                Assert-True ((Get-ScheduledTask -TaskName $script:TaskName).State -ne 'Disabled') 'Manual update re-enables task'
+
+                # Restore source bytes, keeping subsequent lifecycle checks
+                # independent of the test marker.
+                Invoke-Installer -Arguments @('-UpdateClient','-LocalClientPath',$script:Source)
+                Assert-Equal (Get-FileHash -LiteralPath $installedClient -Algorithm SHA256).Hash $originalHash 'Manual update can restore installed source'
+            } finally {
+                Remove-Item -LiteralPath $badClient,$candidate -Force -ErrorAction SilentlyContinue
+            }
 
             $script:CiSecret = 'ci-test-second-secret-only'
             Invoke-Installer -Arguments @('-SetKey')
