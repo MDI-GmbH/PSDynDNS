@@ -53,19 +53,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $tagRef = "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:TAG"
-          $existing = gh api $tagRef --silent 2>$null
-          if ($LASTEXITCODE -eq 0) { throw "Tag $env:TAG already exists." }
-      - name: Prepare versioned client for tests and publication
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $path = Join-Path $PWD 'PSDynDNS.ps1'
-          $source = [IO.File]::ReadAllText($path)
-          $needle = [regex]::Escape("$" + "script:Version = '0.1.0-dev'")
-          if ([regex]::Matches($source, $needle).Count -ne 1) { throw 'Expected exactly one version placeholder.' }
-          $result = $source.Replace("$" + "script:Version = '0.1.0-dev'", "$" + "script:Version = '$env:VERSION'")
-          [IO.File]::WriteAllText($path, $result, (New-Object System.Text.UTF8Encoding($false)))
+          # PowerShell 5.1 treats gh CLI stderr (including expected HTTP 404)
+          # as a terminating error with ErrorActionPreference=Stop.
+          # Only HTTP 404 means the tag is available; all other API errors fail.
+          $url = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:TAG"
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+            'User-Agent' = 'PSDynDNS-Release'
+          }
+          $exists = $false
+          try {
+            $null = Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec 30 -ErrorAction Stop
+            $exists = $true
+          } catch {
+            $status = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+            if ($status -ne 404) { throw }
+          }
+          if ($exists) { throw "Tag $env:TAG already exists." }
       - name: Check PowerShell 5.1 syntax
         shell: powershell
         run: |
@@ -99,7 +105,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -ge 5 })) {
-            Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Scope CurrentUser -Force -SkipPublisherCheck -Confirm:$false
+            Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Scope CurrentUser -Force -Confirm:$false
           }
           Import-Module Pester -MinimumVersion 5.0
       - name: Run PowerShell 7 compatibility tests
@@ -119,6 +125,20 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & ./tests/Integration.Windows.ps1 -Runtime PowerShell7
 
+      - name: Stamp release version after integration tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $PWD 'PSDynDNS.ps1'
+          $source = [IO.File]::ReadAllText($path)
+          $needle = [regex]::Escape("$" + "script:Version = '0.1.0-dev'")
+          if ([regex]::Matches($source, $needle).Count -ne 1) { throw 'Expected exactly one version placeholder.' }
+          $result = $source.Replace("$" + "script:Version = '0.1.0-dev'", "$" + "script:Version = '$env:VERSION'")
+          [IO.File]::WriteAllText($path, $result, (New-Object System.Text.UTF8Encoding($false)))
+          $tokens = $null
+          $parseErrors = $null
+          $null = [Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$parseErrors)
+          if ($parseErrors.Count) { throw 'Version-stamped release script failed PowerShell parsing.' }
       - name: Package standalone files, zip and checksums
         shell: powershell
         run: |
