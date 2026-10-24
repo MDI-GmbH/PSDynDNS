@@ -224,6 +224,7 @@ function Install-ClientFile {
     }
     Set-ProtectedAcl $destination -ClientRead
 }
+Assert-Admin
 if (-not $PSVersionTable.PSVersion -or $PSVersionTable.PSVersion -lt [version]'5.1') { throw 'PowerShell 5.1 or 7+ is required.' }
 $script:TaskPrincipalSid = Get-TaskSid
 switch ($PSCmdlet.ParameterSetName) {
