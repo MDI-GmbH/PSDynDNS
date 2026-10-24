@@ -2,6 +2,9 @@
 # Destructive, isolated Windows integration. Run only on disposable CI runners.
 Describe 'PSDynDNS installation, task isolation and lifecycle' -Tag 'Integration' {
     BeforeAll {
+        if ($env:GITHUB_ACTIONS -ne 'true') {
+            throw 'Destructive Windows integration tests are restricted to disposable GitHub Actions runners.'
+        }
         Set-StrictMode -Version Latest
         $ErrorActionPreference = 'Stop'
         $script:Runtime = if ($PSVersionTable.PSEdition -eq 'Core') { 'PowerShell7' } else { 'WindowsPowerShell' }
