@@ -94,11 +94,30 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $result = Invoke-Pester -Path ./tests -PassThru -Output Detailed
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'Pester suite failed.' }
-      - name: Run real Windows installation integration test
+      - name: Install Pester for PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -ge 5 })) {
+            Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Scope CurrentUser -Force -SkipPublisherCheck -Confirm:$false
+          }
+          Import-Module Pester -MinimumVersion 5.0
+      - name: Run PowerShell 7 compatibility tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = Invoke-Pester -Path ./tests/PSDynDNS.Tests.ps1 -PassThru -Output Detailed
+          if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 tests failed.' }
+      - name: Windows PowerShell 5.1 integration test
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          & ./tests/Integration.Windows.ps1
+          & ./tests/Integration.Windows.ps1 -Runtime WindowsPowerShell
+      - name: PowerShell 7 integration test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./tests/Integration.Windows.ps1 -Runtime PowerShell7
 
       - name: Package standalone files, zip and checksums
         shell: powershell
