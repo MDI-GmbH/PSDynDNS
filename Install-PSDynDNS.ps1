@@ -142,17 +142,17 @@ function Set-ProtectedAcl {
     Set-Acl -LiteralPath $Path -AclObject $acl
 }
 function Get-TaskSid {
-    # Windows task SIDs (S-1-5-87) are derived from the full task path.
-    # Calculate the SID directly: translating the virtual account name
-    # NT TASK\<name> depends on account-name resolution and OS language.
-    # This ASCII task name has the same invariant uppercase form on all locales.
-    $taskPath = '\' + $script:TaskName.ToUpperInvariant()
-    $sha = [Security.Cryptography.SHA1]::Create()
-    try { $hash = $sha.ComputeHash([Text.Encoding]::Unicode.GetBytes($taskPath)) }
-    finally { $sha.Dispose() }
-    $sub = 1..5 | ForEach-Object { [BitConverter]::ToUInt32($hash,(($_ - 1) * 4)) }
-    return 'S-1-5-87-' + ($sub -join '-')
+    # Windows Task Scheduler is the authority for task SIDs. /ShowSid
+    # calculates this SID even before registration. Parse only the stable
+    # numeric SID so the localized command output cannot affect the result.
+    $tool = Join-Path $env:SystemRoot 'System32\schtasks.exe'
+    $output = (& $tool /ShowSid /TN $script:TaskName 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) { throw 'Windows could not calculate the scheduled task SID.' }
+    $match = [regex]::Match($output,'S-1-5-87-(?:[0-9]+-){4}[0-9]+')
+    if (-not $match.Success) { throw 'Windows did not return a valid scheduled task SID.' }
+    return $match.Value
 }
+
 function Ensure-Directories {
     if (-not (Test-Path -LiteralPath $script:Root)) { [void](New-Item -Path $script:Root -ItemType Directory) }
     if (-not (Test-Path -LiteralPath $script:App)) { [void](New-Item -Path $script:App -ItemType Directory) }
