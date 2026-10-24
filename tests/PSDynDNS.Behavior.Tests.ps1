@@ -126,3 +126,41 @@ Describe 'Provider errors and software-update retries' {
         $saved.LastSuccessfulUpdateCheckUtc | Should -BeNullOrEmpty
     }
 }
+
+Describe 'Manual channel-based ForceUpgrade' {
+    BeforeEach {
+        $path = Join-Path $TestDrive ('force-upgrade-' + [guid]::NewGuid().ToString('N') + '.json')
+        $config = [pscustomobject]@{
+            Hostname='test.example.org';UpdateUrl='https://example.org/nic/update'
+            IPv4Enabled=$true;IPv6Enabled=$false;IPv4CheckUrl='https://example.org/myip'
+            AutoUpdate=$false;UpdateChannel='beta';UpdateCheckHours=24
+        }
+        $config | ConvertTo-Json | Set-Content -LiteralPath $path -Encoding UTF8
+        $script:forceConfig = $path
+        Mock Get-UpdateCandidate {
+            [pscustomobject]@{Channel=$Channel;Sha256=('a' * 64)}
+        }
+        Mock Start-SelfUpdate {}
+    }
+    It 'uses beta from config even when automatic updates are disabled' {
+        Invoke-ForcedUpgrade -Path $script:forceConfig
+        Should -Invoke Get-UpdateCandidate -Times 1 -Exactly -ParameterFilter { $Channel -eq 'beta' }
+        Should -Invoke Start-SelfUpdate -Times 1 -Exactly
+    }
+    It 'allows a one-time stable override without changing config' {
+        Invoke-ForcedUpgrade -Path $script:forceConfig -ChannelOverride stable
+        Should -Invoke Get-UpdateCandidate -Times 1 -Exactly -ParameterFilter { $Channel -eq 'stable' }
+        (Get-Content $script:forceConfig -Raw | ConvertFrom-Json).UpdateChannel | Should -Be 'beta'
+    }
+    It 'allows explicit main source selection' {
+        Invoke-ForcedUpgrade -Path $script:forceConfig -ChannelOverride main
+        Should -Invoke Get-UpdateCandidate -Times 1 -Exactly -ParameterFilter { $Channel -eq 'main' }
+    }
+    It 'does not perform DNS update or discovery while installing software' {
+        Mock Invoke-DynDnsRequest { throw 'Must not contact provider' }
+        Mock Get-PublicAddress { throw 'Must not discover IP' }
+        Invoke-ForcedUpgrade -Path $script:forceConfig
+        Should -Invoke Invoke-DynDnsRequest -Times 0
+        Should -Invoke Get-PublicAddress -Times 0
+    }
+}
