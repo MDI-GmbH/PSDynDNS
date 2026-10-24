@@ -209,8 +209,10 @@ try {
 }
 
 # Run the real self-update scenarios on a disposable copy before changing system state.
+# The nested suite deliberately starts native processes that exit non-zero
+# for the negative test cases. Its assertions throw on failure, so a stale
+# $LASTEXITCODE from an expected failure must not fail the parent suite.
 & (Join-Path $PSScriptRoot 'Integration.SelfUpdate.Windows.ps1') -Runtime $Runtime
-if ($LASTEXITCODE -ne 0) { throw 'Self-update integration failed.' }
 
 Write-Host 'Running isolated PSDynDNS Windows installation integration test.'
 Assert-True (Test-WindowsAdmin) 'GitHub Windows runner is elevated'
