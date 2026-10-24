@@ -52,7 +52,13 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $result = Invoke-Pester -Path ./tests -CodeCoverage ./PSDynDNS.ps1,./Install-PSDynDNS.ps1 -PassThru -Output Detailed
+          $pesterConfig = New-PesterConfiguration
+          $pesterConfig.Run.Path = './tests'
+          $pesterConfig.Run.PassThru = $true
+          $pesterConfig.Output.Verbosity = 'Detailed'
+          $pesterConfig.CodeCoverage.Enabled = $true
+          $pesterConfig.CodeCoverage.Path = @('./PSDynDNS.ps1','./Install-PSDynDNS.ps1')
+          $result = Invoke-Pester -Configuration $pesterConfig
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { exit 1 }
   tests-ps7:
     name: tests-ps7
@@ -72,7 +78,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $result = Invoke-Pester -Path ./tests -CodeCoverage ./PSDynDNS.ps1,./Install-PSDynDNS.ps1 -PassThru -Output Detailed
+          $pesterConfig = New-PesterConfiguration
+          $pesterConfig.Run.Path = './tests'
+          $pesterConfig.Run.PassThru = $true
+          $pesterConfig.Output.Verbosity = 'Detailed'
+          $pesterConfig.CodeCoverage.Enabled = $true
+          $pesterConfig.CodeCoverage.Path = @('./PSDynDNS.ps1','./Install-PSDynDNS.ps1')
+          $result = Invoke-Pester -Configuration $pesterConfig
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 compatibility tests failed.' }
 
   integration-ps51:
