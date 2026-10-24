@@ -246,12 +246,12 @@ function ConvertFrom-UtcTimestamp {
     param($Value)
     if ($Value -is [datetimeoffset]) { return $Value.UtcDateTime }
     if ($Value -is [datetime]) { return $Value.ToUniversalTime() }
-    return [datetimeoffset]::ParseExact(
+    return [datetime]::ParseExact(
         [string]$Value,
         'o',
         [Globalization.CultureInfo]::InvariantCulture,
         [Globalization.DateTimeStyles]::RoundtripKind
-    ).UtcDateTime
+    ).ToUniversalTime()
 }
 function Invoke-SoftwareUpdate {
     param($Config,$State,[string]$StatePath,[string]$LogPath)
