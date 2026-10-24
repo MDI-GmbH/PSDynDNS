@@ -149,7 +149,410 @@ function Test-PublicIp {
 
 function Get-LatestRelease {
     $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases/latest' -TimeoutSec 25 -Headers @{'User-Agent'=$script:UserAgent}
-    if ($release.draft -or $release.prerelease -or [string]$release.tag_name -notmatch '^v?([0-9]+)\.([0-9]+)\.([0-9]+)
+    if ($release.draft -or $release.prerelease -or [string]$release.tag_name -notmatch '^v?([0-9]+)\.([0-9]+)\.([0-9]+) throw 'Invalid stable release.' }
+    $version = [version](([string]$release.tag_name) -replace '^v','')
+    $assets = @($release.assets | Where-Object { $_.name -eq 'PSDynDNS.ps1' })
+    if ($assets.Count -ne 1) { throw 'Expected exactly one script release asset.' }
+    $asset = $assets[0]
+    if ([string]$asset.digest -notmatch '^sha256:([a-fA-F0-9]{64}) throw 'Release SHA256 missing.' }
+    $checksum = $Matches[1].ToLowerInvariant()
+    $uri = [uri]$asset.browser_download_url
+    if ($uri.Scheme -ne 'https' -or $uri.Host -ne 'github.com' -or -not $uri.AbsolutePath.StartsWith('/MDI-GmbH/PSDynDNS/releases/download/',[StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected release asset origin.' }
+    return [pscustomobject]@{Version=$version;Url=$uri.AbsoluteUri;Checksum=$checksum}
+}
+function Start-SelfUpdate {
+    param($Release)
+    $target = $PSCommandPath
+    if ([string]::IsNullOrEmpty($target)) { throw 'Self-update requires script execution from a file.' }
+    $newFile = $target + '.new'
+    $backup = $target + '.bak'
+    try {
+        Invoke-WebRequest -Uri $Release.Url -OutFile $newFile -UseBasicParsing -TimeoutSec 60 -MaximumRedirection 0
+        if ((Get-FileHash -LiteralPath $newFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Release.Checksum) { throw 'Update digest mismatch.' }
+        $tokens = $null
+        $errors = $null
+        $null = [Management.Automation.Language.Parser]::ParseFile($newFile,[ref]$tokens,[ref]$errors)
+        if ($errors.Count -gt 0) { throw 'Updated script does not parse.' }
+        # Isolated helper needs no admin rights: it can only replace the task-writable script.
+        $helper = @'
+param([int]$ParentPid,[string]$Original,[string]$Staged,[string]$Backup,[string]$Digest)
+$ErrorActionPreference = 'Stop'
+try {
+    try { (Get-Process -Id $ParentPid -ErrorAction Stop).WaitForExit(60000) | Out-Null } catch {}
+    if ((Get-FileHash -LiteralPath $Staged -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Digest) { throw 'Staging changed.' }
+    if (Test-Path -LiteralPath $Backup) { Remove-Item -LiteralPath $Backup -Force }
+    Move-Item -LiteralPath $Original -Destination $Backup -ErrorAction Stop
+    try { Move-Item -LiteralPath $Staged -Destination $Original -ErrorAction Stop }
+    catch { Move-Item -LiteralPath $Backup -Destination $Original -ErrorAction SilentlyContinue; throw }
+} catch { exit 1 }
+'@
+        $helperPath = $target + '.swap.ps1'
+        [IO.File]::WriteAllText($helperPath, $helper, (New-Object Text.UTF8Encoding($false)))
+        $exe = Join-Path $PSHOME 'powershell.exe'
+        $args = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ParentPid {1} -Original "{2}" -Staged "{3}" -Backup "{4}" -Digest "{5}"' -f $helperPath,$PID,$target,$newFile,$backup,$Release.Checksum
+        Start-Process -FilePath $exe -ArgumentList $args -WindowStyle Hidden | Out-Null
+    } catch {
+        Remove-Item -LiteralPath $newFile -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+function Invoke-SoftwareUpdate {
+    param($Config,$State,[string]$StatePath,[string]$LogPath)
+    if (-not $Config.AutoUpdate) { return }
+    $now = [datetime]::UtcNow
+    if ($State.LastUpdateCheckUtc) {
+        try { if ($now -lt ([datetime]$State.LastUpdateCheckUtc).AddHours([int]$Config.UpdateCheckHours)) { return } } catch {}
+    }
+    $State.LastUpdateCheckUtc = $now.ToString('o')
+    Save-ClientState $StatePath $State
+    try {
+        $release = Get-LatestRelease
+        if ($release.Version -le [version]$script:Version) { return }
+        Start-SelfUpdate $release
+        Write-ClientLog $LogPath INFO 'Verified software update staged; pending process exit.'
+    } catch {
+        Write-ClientLog $LogPath WARN 'Software update check or installation failed; current script retained.'
+    }
+}
+
+function Invoke-Client {
+    param([string]$Path, [bool]$Force)
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $root = Split-Path -Parent $fullPath
+    $runtime = Join-Path $root 'runtime'
+    $logPath = Join-Path $runtime 'client.log'
+    $config = Read-ClientConfig $fullPath
+    $statePath = Join-Path $runtime 'state.json'
+    $state = Read-ClientState $statePath
+    $now = (Get-Date).ToUniversalTime()
+    $fingerprint = Get-ConfigurationFingerprint $config
+    if ($state.BlockedReason -and $state.Fingerprint -eq $fingerprint -and -not $Force) {
+        Write-ClientLog $logPath WARN 'Update blocked; administrator must correct issue and reset state.'
+        return
+    }
+    if ($state.RetryAfterUtc -and $state.Fingerprint -eq $fingerprint -and $now -lt [datetime]$state.RetryAfterUtc -and -not $Force) { return }
+    $ipv4 = $null
+    $ipv6 = $null
+    if ($config.IPv4Enabled) { $ipv4 = Get-PublicAddress ([string]$config.IPv4CheckUrl) ([Net.Sockets.AddressFamily]::InterNetwork) }
+    if ($config.IPv6Enabled) { $ipv6 = Get-PublicAddress ([string]$config.IPv6CheckUrl) ([Net.Sockets.AddressFamily]::InterNetworkV6) }
+    if (-not $Force -and $state.Fingerprint -eq $fingerprint -and $state.LastIPv4 -eq $ipv4 -and $state.LastIPv6 -eq $ipv6) { return }
+    $secret = Read-MachineSecret (Join-Path $root 'secret.dpapi')
+    $addresses = @($ipv4,$ipv6) | Where-Object { $_ }
+    $response = Invoke-DynDnsRequest $config $secret ($addresses -join ',')
+    $code = ($response -split '\s+')[0]
+    $category = Get-ResponseCategory $response
+    $newState = [ordered]@{
+        Fingerprint = $fingerprint
+        LastIPv4 = $state.LastIPv4
+        LastIPv6 = $state.LastIPv6
+        BlockedReason = $null
+        RetryAfterUtc = $null
+        LastUpdateCheckUtc = $state.LastUpdateCheckUtc
+    }
+    switch ($category) {
+        success {
+            $newState.LastIPv4 = $ipv4
+            $newState.LastIPv6 = $ipv6
+            Write-ClientLog $logPath INFO "DynDNS update succeeded: $code"
+        }
+        blocked {
+            $newState.BlockedReason = $code
+            $newState.Fingerprint = $fingerprint
+            Write-ClientLog $logPath ERROR "DynDNS update blocked: $code"
+        }
+        retry {
+            $newState.Fingerprint = $fingerprint
+            $newState.RetryAfterUtc = $now.AddMinutes(30).ToString('o')
+            Write-ClientLog $logPath WARN "DynDNS provider requested retry: $code"
+        }
+    }
+    if ($category -eq 'unknown') {
+        throw 'Unrecognized DynDNS2 provider response.'
+    }
+    Save-ClientState $statePath $newState
+}
+
+# Dot-source is deliberately supported for tests; direct invocation runs the client.
+if ($MyInvocation.InvocationName -ne '.') {
+    try { Invoke-Client -Path $ConfigPath -Force ([bool]$ForceDnsUpdate.IsPresent) }
+    catch {
+        $message = $_.Exception.Message
+        try {
+            $root = Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))
+            Write-ClientLog (Join-Path (Join-Path $root 'runtime') 'client.log') ERROR 'DynDNS run failed. See configuration and network.'
+        } catch { }
+        Write-Error 'DynDNS run failed; see client.log.'
+        exit 1
+    }
+}
+) { throw 'Invalid stable release.' }
+    $version = [version](([string]$release.tag_name) -replace '^v','')
+    $assets = @($release.assets | Where-Object { $_.name -eq 'PSDynDNS.ps1' })
+    if ($assets.Count -ne 1) { throw 'Expected exactly one script release asset.' }
+    $asset = $assets[0]
+    if ([string]$asset.digest -notmatch '^sha256:([a-fA-F0-9]{64})
+) { throw 'Release SHA256 missing.' }
+    $checksum = $Matches[1].ToLowerInvariant()
+    $uri = [uri]$asset.browser_download_url
+    if ($uri.Scheme -ne 'https' -or $uri.Host -ne 'github.com' -or -not $uri.AbsolutePath.StartsWith('/MDI-GmbH/PSDynDNS/releases/download/',[StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected release asset origin.' }
+    return [pscustomobject]@{Version=$version;Url=$uri.AbsoluteUri;Checksum=$checksum}
+}
+function Start-SelfUpdate {
+    param($Release)
+    $target = $PSCommandPath
+    if ([string]::IsNullOrEmpty($target)) { throw 'Self-update requires script execution from a file.' }
+    $newFile = $target + '.new'
+    $backup = $target + '.bak'
+    try {
+        Invoke-WebRequest -Uri $Release.Url -OutFile $newFile -UseBasicParsing -TimeoutSec 60 -MaximumRedirection 0
+        if ((Get-FileHash -LiteralPath $newFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Release.Checksum) { throw 'Update digest mismatch.' }
+        $tokens = $null
+        $errors = $null
+        $null = [Management.Automation.Language.Parser]::ParseFile($newFile,[ref]$tokens,[ref]$errors)
+        if ($errors.Count -gt 0) { throw 'Updated script does not parse.' }
+        # Isolated helper needs no admin rights: it can only replace the task-writable script.
+        $helper = @'
+param([int]$ParentPid,[string]$Original,[string]$Staged,[string]$Backup,[string]$Digest)
+$ErrorActionPreference = 'Stop'
+try {
+    try { (Get-Process -Id $ParentPid -ErrorAction Stop).WaitForExit(60000) | Out-Null } catch {}
+    if ((Get-FileHash -LiteralPath $Staged -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Digest) { throw 'Staging changed.' }
+    if (Test-Path -LiteralPath $Backup) { Remove-Item -LiteralPath $Backup -Force }
+    Move-Item -LiteralPath $Original -Destination $Backup -ErrorAction Stop
+    try { Move-Item -LiteralPath $Staged -Destination $Original -ErrorAction Stop }
+    catch { Move-Item -LiteralPath $Backup -Destination $Original -ErrorAction SilentlyContinue; throw }
+} catch { exit 1 }
+'@
+        $helperPath = $target + '.swap.ps1'
+        [IO.File]::WriteAllText($helperPath, $helper, (New-Object Text.UTF8Encoding($false)))
+        $exe = Join-Path $PSHOME 'powershell.exe'
+        $args = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ParentPid {1} -Original "{2}" -Staged "{3}" -Backup "{4}" -Digest "{5}"' -f $helperPath,$PID,$target,$newFile,$backup,$Release.Checksum
+        Start-Process -FilePath $exe -ArgumentList $args -WindowStyle Hidden | Out-Null
+    } catch {
+        Remove-Item -LiteralPath $newFile -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+function Invoke-SoftwareUpdate {
+    param($Config,$State,[string]$StatePath,[string]$LogPath)
+    if (-not $Config.AutoUpdate) { return }
+    $now = [datetime]::UtcNow
+    if ($State.LastUpdateCheckUtc) {
+        try { if ($now -lt ([datetime]$State.LastUpdateCheckUtc).AddHours([int]$Config.UpdateCheckHours)) { return } } catch {}
+    }
+    $State.LastUpdateCheckUtc = $now.ToString('o')
+    Save-ClientState $StatePath $State
+    try {
+        $release = Get-LatestRelease
+        if ($release.Version -le [version]$script:Version) { return }
+        Start-SelfUpdate $release
+        Write-ClientLog $LogPath INFO 'Verified software update staged; pending process exit.'
+    } catch {
+        Write-ClientLog $LogPath WARN 'Software update check or installation failed; current script retained.'
+    }
+}
+
+function Invoke-Client {
+    param([string]$Path, [bool]$Force)
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $root = Split-Path -Parent $fullPath
+    $runtime = Join-Path $root 'runtime'
+    $logPath = Join-Path $runtime 'client.log'
+    $config = Read-ClientConfig $fullPath
+    $statePath = Join-Path $runtime 'state.json'
+    $state = Read-ClientState $statePath
+    $now = (Get-Date).ToUniversalTime()
+    $fingerprint = Get-ConfigurationFingerprint $config
+    if ($state.BlockedReason -and $state.Fingerprint -eq $fingerprint -and -not $Force) {
+        Write-ClientLog $logPath WARN 'Update blocked; administrator must correct issue and reset state.'
+        return
+    }
+    if ($state.RetryAfterUtc -and $state.Fingerprint -eq $fingerprint -and $now -lt [datetime]$state.RetryAfterUtc -and -not $Force) { return }
+    $ipv4 = $null
+    $ipv6 = $null
+    if ($config.IPv4Enabled) { $ipv4 = Get-PublicAddress ([string]$config.IPv4CheckUrl) ([Net.Sockets.AddressFamily]::InterNetwork) }
+    if ($config.IPv6Enabled) { $ipv6 = Get-PublicAddress ([string]$config.IPv6CheckUrl) ([Net.Sockets.AddressFamily]::InterNetworkV6) }
+    if (-not $Force -and $state.Fingerprint -eq $fingerprint -and $state.LastIPv4 -eq $ipv4 -and $state.LastIPv6 -eq $ipv6) { return }
+    $secret = Read-MachineSecret (Join-Path $root 'secret.dpapi')
+    $addresses = @($ipv4,$ipv6) | Where-Object { $_ }
+    $response = Invoke-DynDnsRequest $config $secret ($addresses -join ',')
+    $code = ($response -split '\s+')[0]
+    $category = Get-ResponseCategory $response
+    $newState = [ordered]@{
+        Fingerprint = $fingerprint
+        LastIPv4 = $state.LastIPv4
+        LastIPv6 = $state.LastIPv6
+        BlockedReason = $null
+        RetryAfterUtc = $null
+        LastUpdateCheckUtc = $state.LastUpdateCheckUtc
+    }
+    switch ($category) {
+        success {
+            $newState.LastIPv4 = $ipv4
+            $newState.LastIPv6 = $ipv6
+            Write-ClientLog $logPath INFO "DynDNS update succeeded: $code"
+        }
+        blocked {
+            $newState.BlockedReason = $code
+            $newState.Fingerprint = $fingerprint
+            Write-ClientLog $logPath ERROR "DynDNS update blocked: $code"
+        }
+        retry {
+            $newState.Fingerprint = $fingerprint
+            $newState.RetryAfterUtc = $now.AddMinutes(30).ToString('o')
+            Write-ClientLog $logPath WARN "DynDNS provider requested retry: $code"
+        }
+    }
+    if ($category -eq 'unknown') {
+        throw 'Unrecognized DynDNS2 provider response.'
+    }
+    Save-ClientState $statePath $newState
+}
+
+# Dot-source is deliberately supported for tests; direct invocation runs the client.
+if ($MyInvocation.InvocationName -ne '.') {
+    try { Invoke-Client -Path $ConfigPath -Force ([bool]$ForceDnsUpdate.IsPresent) }
+    catch {
+        $message = $_.Exception.Message
+        try {
+            $root = Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))
+            Write-ClientLog (Join-Path (Join-Path $root 'runtime') 'client.log') ERROR 'DynDNS run failed. See configuration and network.'
+        } catch { }
+        Write-Error 'DynDNS run failed; see client.log.'
+        exit 1
+    }
+}
+) { throw 'Release SHA256 missing.' }
+    $checksum = $Matches[1].ToLowerInvariant()
+    $uri = [uri]$asset.browser_download_url
+    if ($uri.Scheme -ne 'https' -or $uri.Host -ne 'github.com' -or -not $uri.AbsolutePath.StartsWith('/MDI-GmbH/PSDynDNS/releases/download/',[StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected release asset origin.' }
+    return [pscustomobject]@{Version=$version;Url=$uri.AbsoluteUri;Checksum=$checksum}
+}
+function Start-SelfUpdate {
+    param($Release)
+    $target = $PSCommandPath
+    if ([string]::IsNullOrEmpty($target)) { throw 'Self-update requires script execution from a file.' }
+    $newFile = $target + '.new'
+    $backup = $target + '.bak'
+    try {
+        Invoke-WebRequest -Uri $Release.Url -OutFile $newFile -UseBasicParsing -TimeoutSec 60 -MaximumRedirection 0
+        if ((Get-FileHash -LiteralPath $newFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Release.Checksum) { throw 'Update digest mismatch.' }
+        $tokens = $null
+        $errors = $null
+        $null = [Management.Automation.Language.Parser]::ParseFile($newFile,[ref]$tokens,[ref]$errors)
+        if ($errors.Count -gt 0) { throw 'Updated script does not parse.' }
+        # Isolated helper needs no admin rights: it can only replace the task-writable script.
+        $helper = @'
+param([int]$ParentPid,[string]$Original,[string]$Staged,[string]$Backup,[string]$Digest)
+$ErrorActionPreference = 'Stop'
+try {
+    try { (Get-Process -Id $ParentPid -ErrorAction Stop).WaitForExit(60000) | Out-Null } catch {}
+    if ((Get-FileHash -LiteralPath $Staged -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Digest) { throw 'Staging changed.' }
+    if (Test-Path -LiteralPath $Backup) { Remove-Item -LiteralPath $Backup -Force }
+    Move-Item -LiteralPath $Original -Destination $Backup -ErrorAction Stop
+    try { Move-Item -LiteralPath $Staged -Destination $Original -ErrorAction Stop }
+    catch { Move-Item -LiteralPath $Backup -Destination $Original -ErrorAction SilentlyContinue; throw }
+} catch { exit 1 }
+'@
+        $helperPath = $target + '.swap.ps1'
+        [IO.File]::WriteAllText($helperPath, $helper, (New-Object Text.UTF8Encoding($false)))
+        $exe = Join-Path $PSHOME 'powershell.exe'
+        $args = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ParentPid {1} -Original "{2}" -Staged "{3}" -Backup "{4}" -Digest "{5}"' -f $helperPath,$PID,$target,$newFile,$backup,$Release.Checksum
+        Start-Process -FilePath $exe -ArgumentList $args -WindowStyle Hidden | Out-Null
+    } catch {
+        Remove-Item -LiteralPath $newFile -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+function Invoke-SoftwareUpdate {
+    param($Config,$State,[string]$StatePath,[string]$LogPath)
+    if (-not $Config.AutoUpdate) { return }
+    $now = [datetime]::UtcNow
+    if ($State.LastUpdateCheckUtc) {
+        try { if ($now -lt ([datetime]$State.LastUpdateCheckUtc).AddHours([int]$Config.UpdateCheckHours)) { return } } catch {}
+    }
+    $State.LastUpdateCheckUtc = $now.ToString('o')
+    Save-ClientState $StatePath $State
+    try {
+        $release = Get-LatestRelease
+        if ($release.Version -le [version]$script:Version) { return }
+        Start-SelfUpdate $release
+        Write-ClientLog $LogPath INFO 'Verified software update staged; pending process exit.'
+    } catch {
+        Write-ClientLog $LogPath WARN 'Software update check or installation failed; current script retained.'
+    }
+}
+
+function Invoke-Client {
+    param([string]$Path, [bool]$Force)
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $root = Split-Path -Parent $fullPath
+    $runtime = Join-Path $root 'runtime'
+    $logPath = Join-Path $runtime 'client.log'
+    $config = Read-ClientConfig $fullPath
+    $statePath = Join-Path $runtime 'state.json'
+    $state = Read-ClientState $statePath
+    $now = (Get-Date).ToUniversalTime()
+    $fingerprint = Get-ConfigurationFingerprint $config
+    if ($state.BlockedReason -and $state.Fingerprint -eq $fingerprint -and -not $Force) {
+        Write-ClientLog $logPath WARN 'Update blocked; administrator must correct issue and reset state.'
+        return
+    }
+    if ($state.RetryAfterUtc -and $state.Fingerprint -eq $fingerprint -and $now -lt [datetime]$state.RetryAfterUtc -and -not $Force) { return }
+    $ipv4 = $null
+    $ipv6 = $null
+    if ($config.IPv4Enabled) { $ipv4 = Get-PublicAddress ([string]$config.IPv4CheckUrl) ([Net.Sockets.AddressFamily]::InterNetwork) }
+    if ($config.IPv6Enabled) { $ipv6 = Get-PublicAddress ([string]$config.IPv6CheckUrl) ([Net.Sockets.AddressFamily]::InterNetworkV6) }
+    if (-not $Force -and $state.Fingerprint -eq $fingerprint -and $state.LastIPv4 -eq $ipv4 -and $state.LastIPv6 -eq $ipv6) { return }
+    $secret = Read-MachineSecret (Join-Path $root 'secret.dpapi')
+    $addresses = @($ipv4,$ipv6) | Where-Object { $_ }
+    $response = Invoke-DynDnsRequest $config $secret ($addresses -join ',')
+    $code = ($response -split '\s+')[0]
+    $category = Get-ResponseCategory $response
+    $newState = [ordered]@{
+        Fingerprint = $fingerprint
+        LastIPv4 = $state.LastIPv4
+        LastIPv6 = $state.LastIPv6
+        BlockedReason = $null
+        RetryAfterUtc = $null
+        LastUpdateCheckUtc = $state.LastUpdateCheckUtc
+    }
+    switch ($category) {
+        success {
+            $newState.LastIPv4 = $ipv4
+            $newState.LastIPv6 = $ipv6
+            Write-ClientLog $logPath INFO "DynDNS update succeeded: $code"
+        }
+        blocked {
+            $newState.BlockedReason = $code
+            $newState.Fingerprint = $fingerprint
+            Write-ClientLog $logPath ERROR "DynDNS update blocked: $code"
+        }
+        retry {
+            $newState.Fingerprint = $fingerprint
+            $newState.RetryAfterUtc = $now.AddMinutes(30).ToString('o')
+            Write-ClientLog $logPath WARN "DynDNS provider requested retry: $code"
+        }
+    }
+    if ($category -eq 'unknown') {
+        throw 'Unrecognized DynDNS2 provider response.'
+    }
+    Save-ClientState $statePath $newState
+}
+
+# Dot-source is deliberately supported for tests; direct invocation runs the client.
+if ($MyInvocation.InvocationName -ne '.') {
+    try { Invoke-Client -Path $ConfigPath -Force ([bool]$ForceDnsUpdate.IsPresent) }
+    catch {
+        $message = $_.Exception.Message
+        try {
+            $root = Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))
+            Write-ClientLog (Join-Path (Join-Path $root 'runtime') 'client.log') ERROR 'DynDNS run failed. See configuration and network.'
+        } catch { }
+        Write-Error 'DynDNS run failed; see client.log.'
+        exit 1
+    }
+}
 ) { throw 'Invalid stable release.' }
     $version = [version](([string]$release.tag_name) -replace '^v','')
     $assets = @($release.assets | Where-Object { $_.name -eq 'PSDynDNS.ps1' })
