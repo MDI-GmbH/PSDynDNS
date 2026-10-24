@@ -8,7 +8,7 @@
   This test MUST NOT be executed on production machines.
 #>
 [CmdletBinding()]
-param()
+param([ValidateSet('WindowsPowerShell','PowerShell7')][string]$Runtime='WindowsPowerShell')
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -181,7 +181,7 @@ $result | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $runtim
 '@
     $probeFile = Join-Path (Join-Path $script:InstallRoot 'app') 'CI-LocalService-Probe.ps1'
     [IO.File]::WriteAllText($probeFile,$sourceCode,(New-Object Text.UTF8Encoding($false)))
-    $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $powershell = (Get-ScheduledTask -TaskName $script:TaskName).Actions[0].Execute
     # An encoded launcher writes a marker outside PSDynDNS before touching app ACLs.
     # This distinguishes a task that never starts from an ACL failure loading the probe.
     $bootLog = Join-Path $env:windir 'Temp\PSDynDNS-CI-TaskStarted.txt'
@@ -220,7 +220,8 @@ try {
         '-IPv4CheckUrl','https://127.0.0.1:1/myip',
         '-UpdateUrl','https://127.0.0.1:1/nic/update',
         '-AutoUpdate','False',
-        '-LocalClientPath',$script:Source
+        '-LocalClientPath',$script:Source,
+        '-Runtime',$Runtime
     )
     $script:Installed = $true
     Assert-True (Test-Path -LiteralPath (Join-Path $script:InstallRoot 'app\PSDynDNS.ps1')) 'Client script installed'
@@ -229,6 +230,7 @@ try {
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $script:InstallRoot 'app\PSDynDNS.ps1') -Algorithm SHA256).Hash (Get-FileHash -LiteralPath $script:Source -Algorithm SHA256).Hash 'Installed client matches repository script'
 
     $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop
+    Assert-Equal ([IO.Path]::GetFileName([string]$task.Actions[0].Execute)) $(if ($Runtime -eq 'PowerShell7') { 'pwsh.exe' } else { 'powershell.exe' }) 'Task uses requested PowerShell runtime'
     Assert-Equal ([string]$task.Principal.ProcessTokenSidType) 'Unrestricted' 'Scheduled task has an unrestricted task SID'
     Assert-True (([string]$task.Principal.UserId -match 'LOCAL.?SERVICE|LOCALSERVICE|S-1-5-19')) 'Scheduled task runs as LOCAL SERVICE'
 
@@ -265,6 +267,7 @@ try {
     $task = Get-ScheduledTask -TaskName $script:TaskName
     Assert-True (([string]$task.Actions[0].Arguments -match 'PSDynDNS[.]ps1')) 'Repair restores real client task action'
     Assert-Equal (Read-InstalledSecret) $script:CiSecret 'Repair preserves credentials'
+    Assert-Equal ([IO.Path]::GetFileName([string]$task.Actions[0].Execute)) $(if ($Runtime -eq 'PowerShell7') { 'pwsh.exe' } else { 'powershell.exe' }) 'Repair preserves requested PowerShell runtime'
 
     $stateFile = Join-Path $script:InstallRoot 'runtime\state.json'
     '{"BlockedReason":"badauth"}' | Set-Content -LiteralPath $stateFile -Encoding UTF8
