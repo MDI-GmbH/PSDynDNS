@@ -127,6 +127,15 @@ jobs:
           $pesterConfig.CodeCoverage.Path = @('./PSDynDNS.ps1','./Install-PSDynDNS.ps1')
           $result = Invoke-Pester -Configuration $pesterConfig
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 tests failed.' }
+      - name: Install Pester
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Force -Scope CurrentUser -SkipPublisherCheck -Confirm:$false
+          Import-Module Pester -MinimumVersion 5.0 -ErrorAction Stop
       - name: Windows PowerShell 5.1 integration test
         shell: powershell
         run: |
@@ -139,6 +148,13 @@ jobs:
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) {
             throw 'Windows WindowsPowerShell integration tests failed.'
           }
+      - name: Install Pester for PowerShell 7
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -ge 5 })) {
+            Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Scope CurrentUser -Force -Confirm:$false
+          }
+          Import-Module Pester -MinimumVersion 5.0
       - name: PowerShell 7 integration test
         run: |
           $ErrorActionPreference = 'Stop'
