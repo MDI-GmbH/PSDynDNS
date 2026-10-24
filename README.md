@@ -60,7 +60,7 @@ The installer asks for the DynDNS secret interactively. The scheduler interval i
 | `.\Install-PSDynDNS.ps1 -Uninstall` | Remove executable and task, retain configuration |
 | `.\Install-PSDynDNS.ps1 -Uninstall -Purge` | Remove installation including configuration and secret |
 
-The scheduled task runs the client automatically. Use `-Runtime PowerShell7` during installation (or configuration) to select PowerShell 7 instead of the default Windows PowerShell 5.1. The default DNS resolvers are Google's `8.8.8.8` and `8.8.4.4`. To override them, run `./Install-PSDynDNS.ps1 -DnsServers @('1.1.1.1','1.0.0.1')`; the selection is stored in `config.json`. For troubleshooting, the client accepts `-ConfigPath` and `-ForceDnsUpdate`; never run the task-writable installed script with administrator privileges.
+Runtime defaults to Windows PowerShell 5.1; DNS resolvers default to `8.8.8.8` and `8.8.4.4`. Both can be changed through the installer.
 
 ## Update channels
 
@@ -80,44 +80,38 @@ The updater validates downloads and verifies PowerShell syntax before staging a 
 
 ## Command-line parameters
 
-Run the bootstrap installer from an **elevated Windows PowerShell 5.1 or PowerShell 7** console. Existing installations are automatically reconfigured when setting arguments are supplied: `-Configure` is optional.
+Installer (requires Administrator rights). Existing installations can be reconfigured without `-Configure`.
 
-| Parameter | Usage |
+| Parameter | Purpose |
 | --- | --- |
-| `-Install` | Install a new instance (requires `-Hostname`). |
-| `-Hostname` | DynDNS hostname (required on first install). |
-| `-Username` | Optional provider username; defaults to hostname. |
-| `-UpdateUrl` | DynDNS2 HTTPS endpoint. |
-| `-IPv4Enabled`, `-IPv6Enabled` | Enable or disable individual IP families using `$true` or `$false`. |
-| `-IPv4CheckUrl`, `-IPv6CheckUrl` | HTTPS address discovery endpoints. |
-| `-Runtime` | `WindowsPowerShell` (default) or `PowerShell7` as task engine; `-Repair` retains selection. |
-| `-IntervalMinutes` | Scheduled Task frequency, default 10 minutes. **Not stored in `config.json`**. |
-| `-AutoUpdate` | Enable or disable automatic software checks. |
-| `-UpdateChannel` | `stable`, `beta`, or `main`. |
-| `-UpdateCheckHours` | Hours between successful software checks (default 24); transient failures can retry after 30 minutes. |
-| `-DnsServers` | DNS resolver IP addresses (default `8.8.8.8`, `8.8.4.4`); persisted to `config.json`. |
-| `-SetKey` | Prompt for a new provider secret. |
-| `-Repair` | Restore task and NTFS permissions without resetting credentials. |
-| `-ResetState` | Clear cached address and provider error state. |
-| `-Uninstall` / `-Purge` | Uninstall, optionally removing configuration and secret. |
-| `-LocalClientPath` | Install from a local copy of `PSDynDNS.ps1` (for development). |
-| `-CredentialSecret` | Optional `SecureString` for unattended setup; avoid plaintext secrets. |
+| `-Install -Hostname <FQDN>` | Install client |
+| `-Hostname`, `-Username`, `-UpdateUrl` | DNS name and DynDNS2 credentials endpoint |
+| `-IPv4Enabled`, `-IPv6Enabled` | Enable IP families |
+| `-IPv4CheckUrl`, `-IPv6CheckUrl` | Public IP discovery endpoints |
+| `-DnsServers` | DNS resolver IPs (default: `8.8.8.8`, `8.8.4.4`) |
+| `-Runtime` | `WindowsPowerShell` or `PowerShell7` |
+| `-IntervalMinutes` | Task interval (default: 10; not in JSON) |
+| `-AutoUpdate`, `-UpdateChannel`, `-UpdateCheckHours` | Software update settings |
+| `-SetKey` | Replace DPAPI-protected secret |
+| `-Repair`, `-ResetState` | Repair installation or reset runtime state |
+| `-Uninstall [-Purge]` | Uninstall; optionally delete all data |
+| `-LocalClientPath` | Install local client file |
+| `-CredentialSecret` | SecureString for unattended setup |
 
-The installed client accepts `-ConfigPath`, `-ForceDnsUpdate`, and `-ForceUpgrade`.
-A forced software update uses the configured `UpdateChannel` regardless of `AutoUpdate` or the normal check interval. An optional `-UpgradeChannel` selects `stable`, `beta`, or `main` for this run only; it does not change the saved configuration.
+Client (`PSDynDNS.ps1`):
 
-~~~powershell
-& 'C:\ProgramData\PSDynDNS\app\PSDynDNS.ps1' -ForceUpgrade -Verbose
-& 'C:\ProgramData\PSDynDNS\app\PSDynDNS.ps1' -ForceUpgrade -UpgradeChannel beta -Verbose
-~~~
+| Parameter | Purpose |
+| --- | --- |
+| `-ConfigPath` | Override configuration path |
+| `-ForceDnsUpdate` | Update provider regardless of DNS match |
+| `-ForceUpgrade` | Install selected channel's current client version |
+| `-UpgradeChannel stable\|beta\|main` | Override channel for `-ForceUpgrade` only |
 
-The requested version is verified and staged; a separate helper swaps the script after the current process exits. The command does not update DNS records. It may reinstall the selected channel's version even if already installed. Avoid running the installed client elevated.
+```powershell
+& 'C:\ProgramData\PSDynDNS\app\PSDynDNS.ps1' -ForceUpgrade -UpgradeChannel beta
+```
 
-The `-ForceDnsUpdate` switch sends a DynDNS request even if DNS already matches; avoid frequent forced calls. Administrative configuration happens through the bootstrap installer.
-
-At each scheduled run the client discovers its public IP addresses and queries the configured DNS resolvers for the hostname's A and/or AAAA records. It updates the provider if DNS differs, even if the public address has not changed since the previous run. Identical records cause a local skip (not a provider `nochg` response). DNS timeouts and conflicting resolver answers fail closed; missing records are treated as drift. Public recursive resolvers may return cached values until TTL expiry; the client throttles identical post-update stale responses to avoid excess provider requests.
-
-`state.json` is retained only for operational state, including provider blocks/backoff, previous observations, and timestamps of attempted and successful GitHub update checks. It is no longer the authority for deciding whether DNS agrees with the public IP. `-SetKey` clears a previous `badauth` block after a successful credential rotation. Persistent provider blocks make the task exit with an error status.
+The client compares public IPs with DNS A/AAAA records. `state.json` retains retry and update-check status. Run the installed client without elevation.
 
 ### Install directly from a release
 
