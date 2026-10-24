@@ -53,7 +53,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $pesterConfig = New-PesterConfiguration
-          $pesterConfig.Run.Path = './tests'
+          $pesterConfig.Run.Path = @('./tests/PSDynDNS.Tests.ps1','./tests/PSDynDNS.Behavior.Tests.ps1')
           $pesterConfig.Run.PassThru = $true
           $pesterConfig.Output.Verbosity = 'Detailed'
           $pesterConfig.CodeCoverage.Enabled = $true
@@ -79,7 +79,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $pesterConfig = New-PesterConfiguration
-          $pesterConfig.Run.Path = './tests'
+          $pesterConfig.Run.Path = @('./tests/PSDynDNS.Tests.ps1','./tests/PSDynDNS.Behavior.Tests.ps1')
           $pesterConfig.Run.PassThru = $true
           $pesterConfig.Output.Verbosity = 'Detailed'
           $pesterConfig.CodeCoverage.Enabled = $true
@@ -98,7 +98,14 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          & ./tests/Integration.Windows.ps1 -Runtime WindowsPowerShell
+          $pesterConfig = New-PesterConfiguration
+          $pesterConfig.Run.Path = @('./tests/Integration.Windows.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1')
+          $pesterConfig.Run.PassThru = $true
+          $pesterConfig.Output.Verbosity = 'Detailed'
+          $result = Invoke-Pester -Configuration $pesterConfig
+          if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) {
+            throw 'Windows WindowsPowerShell integration tests failed.'
+          }
 
   integration-ps7:
     name: integration-ps7
@@ -111,7 +118,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & ./tests/Integration.Windows.ps1 -Runtime PowerShell7
+          $pesterConfig = New-PesterConfiguration
+          $pesterConfig.Run.Path = @('./tests/Integration.Windows.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1')
+          $pesterConfig.Run.PassThru = $true
+          $pesterConfig.Output.Verbosity = 'Detailed'
+          $result = Invoke-Pester -Configuration $pesterConfig
+          if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) {
+            throw 'Windows PowerShell7 integration tests failed.'
+          }
 
   build:
     name: build
