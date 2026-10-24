@@ -1,0 +1,123 @@
+name: PowerShell CI
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# PR runs share one concurrency group. A newer commit cancels an older run.
+# Non-PR runs have their own group and cannot cancel main builds.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  tests-ps51:
+    name: tests-ps51
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse Windows PowerShell 5.1 scripts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($file in @('PSDynDNS.ps1','Install-PSDynDNS.ps1')) {
+            $tokens = $null
+            $parseErrors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file), [ref]$tokens, [ref]$parseErrors)
+            if ($parseErrors.Count) {
+              foreach ($e in $parseErrors) {
+                Write-Host ("PARSE ERROR in {0} at {1}:{2}: {3}" -f $file, $e.Extent.StartLineNumber, $e.Extent.StartColumnNumber, $e.Message)
+              }
+              exit 1
+            }
+          }
+      - name: Install Pester 5
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Force -Scope CurrentUser -SkipPublisherCheck -Confirm:$false
+          Import-Module Pester -MinimumVersion 5.0 -ErrorAction Stop
+      - name: Run Pester tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = Invoke-Pester -Path ./tests -PassThru -Output Detailed
+          if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { exit 1 }
+  tests-ps7:
+    name: tests-ps7
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Pester for PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -ge 5 })) {
+            Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Scope CurrentUser -Force -SkipPublisherCheck -Confirm:$false
+          }
+          Import-Module Pester -MinimumVersion 5.0
+      - name: Run compatibility tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = Invoke-Pester -Path ./tests/PSDynDNS.Tests.ps1 -PassThru -Output Detailed
+          if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 compatibility tests failed.' }
+
+  integration-ps51:
+    name: integration-ps51
+    needs: [tests-ps51, tests-ps7]
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and run under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./tests/Integration.Windows.ps1 -Runtime WindowsPowerShell
+
+  integration-ps7:
+    name: integration-ps7
+    needs: [tests-ps51, tests-ps7]
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and run under PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./tests/Integration.Windows.ps1 -Runtime PowerShell7
+
+  build:
+    name: build
+    needs: [tests-ps51, tests-ps7, integration-ps51, integration-ps7]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble release package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Compress-Archive -Path PSDynDNS.ps1,Install-PSDynDNS.ps1,config.example.json,README.md,LICENSE -DestinationPath dist/PSDynDNS.zip -Force
+          Get-FileHash dist/PSDynDNS.zip -Algorithm SHA256 | Format-List | Out-String | Set-Content dist/PSDynDNS.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PSDynDNS-build
+          path: dist/*
+          if-no-files-found: error

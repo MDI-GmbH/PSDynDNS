@@ -1,0 +1,148 @@
+name: Publish Release
+
+# Only a manually approved workflow run on main creates a GitHub Release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semantic version without v, e.g. 0.2.0 or 0.3.0-beta.1'
+        type: string
+        required: true
+      prerelease:
+        description: 'Publish as pre-release (must match alpha/beta/rc suffix)'
+        type: boolean
+        default: true
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: psdyndns-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-2022
+    timeout-minutes: 18
+    steps:
+      - name: Enforce main and validate version
+        shell: powershell
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF -ne 'refs/heads/main') { throw 'Releases must be dispatched from main.' }
+          $v = $env:REQUESTED_VERSION
+          if ($v -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(alpha|beta|rc)\.([1-9][0-9]*))?$') {
+            throw 'Invalid version. Use 1.2.3 or 1.2.3-beta.1 (alpha and rc also supported).'
+          }
+          $hasSuffix = [bool]$Matches[4]
+          if ($hasSuffix -ne ($env:PRERELEASE -eq 'true')) {
+            throw 'Pre-release checkbox must agree with the version suffix.'
+          }
+          "TAG=v$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Ensure release tag does not exist
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tagRef = "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:TAG"
+          $existing = gh api $tagRef --silent 2>$null
+          if ($LASTEXITCODE -eq 0) { throw "Tag $env:TAG already exists." }
+      - name: Prepare versioned client for tests and publication
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $PWD 'PSDynDNS.ps1'
+          $source = [IO.File]::ReadAllText($path)
+          $needle = [regex]::Escape("$" + "script:Version = '0.1.0-dev'")
+          if ([regex]::Matches($source, $needle).Count -ne 1) { throw 'Expected exactly one version placeholder.' }
+          $result = $source.Replace("$" + "script:Version = '0.1.0-dev'", "$" + "script:Version = '$env:VERSION'")
+          [IO.File]::WriteAllText($path, $result, (New-Object System.Text.UTF8Encoding($false)))
+      - name: Check PowerShell 5.1 syntax
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($file in @('PSDynDNS.ps1', 'Install-PSDynDNS.ps1')) {
+            $tokens = $null
+            $errors = $null
+            $null = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file), [ref]$tokens, [ref]$errors)
+            if ($errors.Count) {
+              foreach ($e in $errors) { Write-Host ("$file {0}:{1} {2}" -f $e.Extent.StartLineNumber,$e.Extent.StartColumnNumber,$e.Message) }
+              throw "PowerShell parser failed: $file"
+            }
+          }
+      - name: Install Pester
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Force -Scope CurrentUser -SkipPublisherCheck -Confirm:$false
+          Import-Module Pester -MinimumVersion 5.0 -ErrorAction Stop
+      - name: Run Pester tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = Invoke-Pester -Path ./tests -PassThru -Output Detailed
+          if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'Pester suite failed.' }
+      - name: Install Pester for PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -ge 5 })) {
+            Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Scope CurrentUser -Force -SkipPublisherCheck -Confirm:$false
+          }
+          Import-Module Pester -MinimumVersion 5.0
+      - name: Run PowerShell 7 compatibility tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = Invoke-Pester -Path ./tests/PSDynDNS.Tests.ps1 -PassThru -Output Detailed
+          if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 tests failed.' }
+      - name: Windows PowerShell 5.1 integration test
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./tests/Integration.Windows.ps1 -Runtime WindowsPowerShell
+      - name: PowerShell 7 integration test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./tests/Integration.Windows.ps1 -Runtime PowerShell7
+
+      - name: Package standalone files, zip and checksums
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item PSDynDNS.ps1,Install-PSDynDNS.ps1 -Destination dist
+          $zip = "dist/PSDynDNS-$env:TAG.zip"
+          Compress-Archive -Path PSDynDNS.ps1,Install-PSDynDNS.ps1,config.example.json,README.md,LICENSE -DestinationPath $zip -Force
+          $names = @('PSDynDNS.ps1','Install-PSDynDNS.ps1',("PSDynDNS-$env:TAG.zip"))
+          $lines = @($names | ForEach-Object {
+            $sum = (Get-FileHash (Join-Path dist $_) -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$sum  $_"
+          })
+          [IO.File]::WriteAllLines((Join-Path $PWD 'dist/SHA256SUMS.txt'),$lines,(New-Object Text.UTF8Encoding($false)))
+      - name: Publish release (create draft first)
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $args = @('release','create',$env:TAG,'dist/PSDynDNS.ps1','dist/Install-PSDynDNS.ps1',("dist/PSDynDNS-$env:TAG.zip"),'dist/SHA256SUMS.txt','--repo',$env:GITHUB_REPOSITORY,'--target',$env:GITHUB_SHA,'--title',("PSDynDNS "+$env:TAG),'--draft','--generate-notes')
+          if ($env:PRERELEASE -eq 'true') { $args += '--prerelease' }
+          & gh @args
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create draft release.' }
+          gh release edit $env:TAG --repo $env:GITHUB_REPOSITORY --draft=false
+          if ($LASTEXITCODE -ne 0) { throw 'Draft release exists, but publishing failed.' }

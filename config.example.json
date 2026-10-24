@@ -1,0 +1,12 @@
+{
+  "Hostname": "host.example.org",
+  "Username": null,
+  "UpdateUrl": "https://nsupdate.info/nic/update",
+  "IPv4Enabled": true,
+  "IPv6Enabled": false,
+  "IPv4CheckUrl": "https://ipv4.nsupdate.info/myip",
+  "IPv6CheckUrl": "https://ipv6.nsupdate.info/myip",
+  "AutoUpdate": false,
+  "UpdateCheckHours": 24,
+  "UpdateChannel": "stable"
+}
