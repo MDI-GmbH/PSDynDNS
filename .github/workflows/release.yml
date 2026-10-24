@@ -117,7 +117,7 @@ jobs:
       - name: Run PowerShell 7 compatibility tests
         run: |
           $ErrorActionPreference = 'Stop'
-          $result = Invoke-Pester -Path ./tests/PSDynDNS.Tests.ps1 -PassThru -Output Detailed
+          $result = Invoke-Pester -Path ./tests -PassThru -Output Detailed
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'PowerShell 7 tests failed.' }
       - name: Windows PowerShell 5.1 integration test
         shell: powershell
