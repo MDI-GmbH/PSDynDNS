@@ -94,6 +94,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $result = Invoke-Pester -Path ./tests -PassThru -Output Detailed
           if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'Pester suite failed.' }
+      - name: Run real Windows installation integration test
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./tests/Integration.Windows.ps1
+
       - name: Package standalone files, zip and checksums
         shell: powershell
         run: |
