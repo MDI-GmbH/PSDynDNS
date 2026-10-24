@@ -53,9 +53,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          gh release view $env:TAG --repo $env:GITHUB_REPOSITORY 2>$null
-          if ($LASTEXITCODE -eq 0) { throw "Release $env:TAG already exists." }
-          git ls-remote --exit-code --tags origin ("refs/tags/" + $env:TAG) | Out-Null
+          $tagRef = "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:TAG"
+          $existing = gh api $tagRef --silent 2>$null
           if ($LASTEXITCODE -eq 0) { throw "Tag $env:TAG already exists." }
       - name: Prepare versioned client for tests and publication
         shell: powershell
