@@ -48,7 +48,26 @@ function Read-Host {
 
 function Invoke-Installer {
     param([string[]]$Arguments)
-    & $script:Installer @Arguments
+    # PowerShell string-array splatting treats '-Install' as a positional string.
+    # Convert the test's name/value arguments into a true named-parameter hashtable.
+    $switches = @('Install','Configure','Repair','SetKey','ResetState','Uninstall','Purge')
+    $params = @{}
+    for ($i=0; $i -lt $Arguments.Count; $i++) {
+        $token = $Arguments[$i]
+        if (-not $token.StartsWith('-')) { throw "Expected installer parameter, got: $token" }
+        $name = $token.Substring(1)
+        if ($switches -contains $name) {
+            $params[$name] = $true
+        } else {
+            if ($i + 1 -ge $Arguments.Count) { throw "Missing value for $token" }
+            $i++
+            $value = $Arguments[$i]
+            if ($name -in @('IPv4Enabled','IPv6Enabled','AutoUpdate')) { $value = [bool]::Parse($value) }
+            elseif ($name -in @('IntervalMinutes','UpdateCheckHours')) { $value = [int]::Parse($value) }
+            $params[$name] = $value
+        }
+    }
+    & $script:Installer @params
 }
 
 function Read-InstalledSecret {
