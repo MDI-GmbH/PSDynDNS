@@ -65,7 +65,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -ge 5 })) {
-            Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Scope CurrentUser -Force -SkipPublisherCheck -Confirm:$false
+            Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Scope CurrentUser -Force -Confirm:$false
           }
           Import-Module Pester -MinimumVersion 5.0
       - name: Run compatibility tests
