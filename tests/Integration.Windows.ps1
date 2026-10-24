@@ -237,7 +237,7 @@ try {
     Assert-Equal (Read-InstalledSecret) $script:CiSecret 'SetKey replaces encrypted credentials'
 
     Invoke-Installer -Arguments @(
-        '-Configure', '-Hostname','ci-changed.example.invalid',
+        '-Hostname','ci-changed.example.invalid',
         '-IPv4Enabled','False', '-IPv6Enabled','True',
         '-IPv6CheckUrl','https://127.0.0.1:1/myipv6',
         '-UpdateChannel','beta',
@@ -249,9 +249,9 @@ try {
     Assert-Equal $config.IPv4Enabled $false 'Configure disables IPv4'
     Assert-Equal $config.IPv6Enabled $true 'Configure enables IPv6'
     Assert-Equal $config.UpdateChannel 'beta' 'Configure sets update channel'
-    Assert-Equal $config.IntervalMinutes 15 'Configure updates interval'
+    Assert-True (-not (@($config.PSObject.Properties | ForEach-Object { $_.Name }) -contains 'IntervalMinutes')) 'Task interval is not stored in JSON'
     $task = Get-ScheduledTask -TaskName $script:TaskName
-    Assert-True (([string]$task.Triggers[0].Repetition.Interval -match '15M')) 'Configure updates task repetition interval'
+    Assert-True (([string]$task.Triggers[0].Repetition.Interval -match '15M')) 'Setting parameter updates task repetition interval'
 
     $probe = Start-LocalServiceProbe
     Assert-Equal $probe.Account 'S-1-5-19' 'Probe actually runs as LOCAL SERVICE'
