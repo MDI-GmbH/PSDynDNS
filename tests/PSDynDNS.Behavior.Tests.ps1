@@ -116,6 +116,43 @@ Describe 'Provider errors and software-update retries' {
         { Invoke-Client -Path $script:testConfig -Force $false } | Should -Not -Throw
         Should -Invoke Invoke-DynDnsRequest -Times 1 -Exactly
     }
+    It 'skips the DynDNS provider when DNS already matches' {
+        Mock Get-DnsComparison { [pscustomobject]@{Matches=$true;Observation='A=82.149.168.179;AAAA='} }
+        Mock Invoke-DynDnsRequest { throw 'Provider must not be contacted' }
+        { Invoke-Client -Path $script:testConfig -Force $false } | Should -Not -Throw
+        Should -Invoke Invoke-DynDnsRequest -Times 0
+    }
+    It 'handles 911 as a temporary failure with persisted retry backoff' {
+        Mock Invoke-DynDnsRequest { '911' }
+        { Invoke-Client -Path $script:testConfig -Force $false } | Should -Throw '*911*'
+        (Read-ClientState $script:testState).RetryAfterUtc | Should -Not -BeNullOrEmpty
+        { Invoke-Client -Path $script:testConfig -Force $false } | Should -Throw '*backoff*'
+        Should -Invoke Invoke-DynDnsRequest -Times 1 -Exactly
+    }
+    It 'accepts nochg without marking the provider as blocked' {
+        Mock Invoke-DynDnsRequest { 'nochg 82.149.168.179' }
+        { Invoke-Client -Path $script:testConfig -Force $false } | Should -Not -Throw
+        (Read-ClientState $script:testState).BlockedReason | Should -BeNullOrEmpty
+        (Read-ClientState $script:testState).LastIPv4 | Should -Be '82.149.168.179'
+    }
+    It 'does not repeat a successful provider update against stale DNS cache' {
+        Mock Invoke-DynDnsRequest { 'good 82.149.168.179' }
+        Invoke-Client -Path $script:testConfig -Force $false
+        Invoke-Client -Path $script:testConfig -Force $false
+        Should -Invoke Invoke-DynDnsRequest -Times 1 -Exactly
+    }
+    It 'does not persist a successful update after an unknown provider response' {
+        Mock Invoke-DynDnsRequest { 'unsupported-provider-token' }
+        { Invoke-Client -Path $script:testConfig -Force $false } | Should -Throw '*Unrecognized*'
+        (Read-ClientState $script:testState).LastProviderUpdateUtc | Should -BeNullOrEmpty
+    }
+    It 'bypasses DNS comparison only for an explicit force update' {
+        Mock Get-DnsComparison { throw 'DNS comparison must be skipped' }
+        Mock Invoke-DynDnsRequest { 'good 82.149.168.179' }
+        { Invoke-Client -Path $script:testConfig -Force $true } | Should -Not -Throw
+        Should -Invoke Get-DnsComparison -Times 0
+        Should -Invoke Invoke-DynDnsRequest -Times 1 -Exactly
+    }
     It 'records attempted but not successful GitHub check on transient failure' {
         $state = Read-ClientState $script:testState
         $cfg = [pscustomobject]@{AutoUpdate=$true;UpdateCheckHours=24;UpdateChannel='stable'}
