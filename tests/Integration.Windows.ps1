@@ -90,6 +90,24 @@ function Wait-File {
         if (Test-Path -LiteralPath $Path -PathType Leaf) { return }
         Start-Sleep -Milliseconds 500
     }
+    Write-Warning ("Missing task output: " + $Path)
+    $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
+    if ($task) {
+        $info = Get-ScheduledTaskInfo -TaskName $script:TaskName -ErrorAction SilentlyContinue
+        Write-Host ("Task state: " + $task.State)
+        if ($info) { Write-Host ("Task last result: " + $info.LastTaskResult + "; last run: " + $info.LastRunTime.ToString('o')) }
+        Write-Host ("Task principal: " + $task.Principal.UserId + "; SID type: " + $task.Principal.ProcessTokenSidType)
+    }
+    foreach ($event in @(Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-TaskScheduler/Operational';StartTime=(Get-Date).AddMinutes(-4)} -MaxEvents 15 -ErrorAction SilentlyContinue)) {
+        Write-Host ("TaskScheduler event " + $event.Id + ": " + ($event.Message -replace '[\r\n]+',' '))
+    }
+    $runtime = Join-Path $script:InstallRoot 'runtime'
+    foreach ($name in @('service-probe.error.txt','service-probe.start.txt')) {
+        $diagnostic = Join-Path $runtime $name
+        if (Test-Path -LiteralPath $diagnostic) {
+            Write-Host ("Task diagnostic " + $name + ": " + (Get-Content -LiteralPath $diagnostic -Raw))
+        }
+    }
     throw "Timed out waiting for Task Scheduler output: $Path"
 }
 function Wait-TaskStopped {
@@ -107,7 +125,15 @@ function Start-LocalServiceProbe {
     # -Repair restores the original action afterwards.
     $sourceCode = @'
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'PSDynDNS.ps1')
+try {
+    [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'runtime\service-probe.start.txt'),'started')
+    . (Join-Path $PSScriptRoot 'PSDynDNS.ps1')
+} catch {
+    try {
+        [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'runtime\service-probe.error.txt'), [string]$_.Exception.Message)
+    } catch {}
+    throw
+}
 $root = Split-Path -Parent $PSScriptRoot
 $cfg = Read-ClientConfig (Join-Path $root 'config.json')
 $key = Read-MachineSecret (Join-Path $root 'secret.dpapi')
