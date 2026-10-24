@@ -7,6 +7,7 @@ param(
     [Parameter(ParameterSetName='SetKey',Mandatory=$true)][switch]$SetKey,
     [Parameter(ParameterSetName='Uninstall',Mandatory=$true)][switch]$Uninstall,
     [Parameter(ParameterSetName='Uninstall')][switch]$Purge,
+    [Parameter(ParameterSetName='ResetState',Mandatory=$true)][switch]$ResetState,
     [string]$Hostname,
     [string]$Username,
     [string]$UpdateUrl,
@@ -77,8 +78,11 @@ function Ensure-Directories {
     $script:TaskPrincipalSid = Get-TaskSid
     Set-ProtectedAcl $script:Root -ClientRead -Directory
     Set-ProtectedAcl $script:App -ClientModify -Directory
+    $runtime = Join-Path $script:Root 'runtime'
+    if (-not (Test-Path -LiteralPath $runtime)) { [void](New-Item -Path $runtime -ItemType Directory) }
+    Set-ProtectedAcl $runtime -ClientModify -Directory
     foreach ($name in @('state.json', 'client.log')) {
-        $target = Join-Path $script:Root $name
+        $target = Join-Path $runtime $name
         if (-not (Test-Path -LiteralPath $target)) {
             if ($name -eq 'state.json') { '{}' | Set-Content -LiteralPath $target -Encoding UTF8 }
             else { [IO.File]::WriteAllText($target, '') }
@@ -185,7 +189,8 @@ switch ($PSCmdlet.ParameterSetName) {
     Configure {
         $cfg = Apply-Settings (Read-Settings)
         Save-Settings $cfg
-        Write-Host 'Configuration saved. If interval changed, run -Repair to update the Task.'
+        if ($PSBoundParameters.ContainsKey('IntervalMinutes')) { Install-Task ([int]$cfg.IntervalMinutes) }
+        Write-Host 'Configuration saved.'
     }
     Repair {
         $cfg = Read-Settings
@@ -195,7 +200,9 @@ switch ($PSCmdlet.ParameterSetName) {
             if (-not (Test-Path -LiteralPath $p)) { throw "Missing $name; cannot repair without reinstalling/setting secret." }
             Set-ProtectedAcl $p -ClientRead
         }
-        if (-not (Test-Path -LiteralPath (Join-Path $script:App 'PSDynDNS.ps1'))) { Install-ClientFile $LocalClientPath }
+        $client = Join-Path $script:App 'PSDynDNS.ps1'
+        if (-not (Test-Path -LiteralPath $client)) { Install-ClientFile $LocalClientPath }
+        else { Set-ProtectedAcl $client -ClientRead }
         Install-Task ([int]$cfg.IntervalMinutes)
         Write-Host 'PSDynDNS repaired.'
     }
@@ -203,6 +210,14 @@ switch ($PSCmdlet.ParameterSetName) {
         if (-not (Test-Path -LiteralPath $script:ConfigPath)) { throw 'Install first.' }
         Save-Secret
         Write-Host 'Secret updated.'
+    }
+    ResetState {
+        $state = Join-Path (Join-Path $script:Root 'runtime') 'state.json'
+        if (-not (Test-Path -LiteralPath $script:ConfigPath)) { throw 'PSDynDNS is not installed.' }
+        if (Test-Path -LiteralPath $state) { Remove-Item -LiteralPath $state -Force }
+        '{}' | Set-Content -LiteralPath $state -Encoding UTF8
+        Set-ProtectedAcl $state -ClientModify
+        Write-Host 'DynDNS state cleared; next scheduled run will refresh DNS.'
     }
     Uninstall {
         Unregister-ScheduledTask -TaskName $script:TaskName -Confirm:$false -ErrorAction SilentlyContinue
