@@ -1,8 +1,8 @@
 #requires -Version 5.1
-[CmdletBinding(DefaultParameterSetName='Install')]
+[CmdletBinding(DefaultParameterSetName='Configure')]
 param(
     [Parameter(ParameterSetName='Install')][switch]$Install,
-    [Parameter(ParameterSetName='Configure',Mandatory=$true)][switch]$Configure,
+    [Parameter(ParameterSetName='Configure')][switch]$Configure,
     [Parameter(ParameterSetName='Repair',Mandatory=$true)][switch]$Repair,
     [Parameter(ParameterSetName='SetKey',Mandatory=$true)][switch]$SetKey,
     [Parameter(ParameterSetName='Uninstall',Mandatory=$true)][switch]$Uninstall,
@@ -113,16 +113,17 @@ function Save-Settings {
     if (-not $Cfg.Hostname -or [string]$Cfg.Hostname -notmatch '^[A-Za-z0-9.-]+[.][A-Za-z0-9.-]+$') { throw 'A valid FQDN is required.' }
     if (-not $Cfg.IPv4Enabled -and -not $Cfg.IPv6Enabled) { throw 'Enable at least one IP family.' }
     foreach ($entry in @('UpdateUrl','IPv4CheckUrl','IPv6CheckUrl')) { Assert-Url -Value ([string]$Cfg.$entry) -Name $entry }
-    if ($Cfg.IntervalMinutes -lt 1 -or $Cfg.IntervalMinutes -gt 1440) { throw 'IntervalMinutes must be 1..1440.' }
-    if ($Cfg.UpdateCheckHours -lt 1) { throw 'UpdateCheckHours must be positive.' }
+    if ($Cfg.UpdateCheckHours -lt 1 -or $Cfg.UpdateCheckHours -gt 720) { throw 'UpdateCheckHours must be 1..720.' }
     if (-not $Cfg.PSObject.Properties['UpdateChannel']) { $Cfg | Add-Member -NotePropertyName UpdateChannel -NotePropertyValue 'stable' }
     if ($Cfg.UpdateChannel -notin @('stable','beta','main')) { throw 'Invalid UpdateChannel.' }
+    # Upgrade old installations: the task alone owns its interval.
+    if ($Cfg.PSObject.Properties['IntervalMinutes']) { $Cfg.PSObject.Properties.Remove('IntervalMinutes') }
     $Cfg | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
     Set-ProtectedAcl $script:ConfigPath -ClientRead
 }
 function Apply-Settings {
     param($Cfg)
-    foreach ($name in @('Hostname','Username','UpdateUrl','IPv4Enabled','IPv6Enabled','IPv4CheckUrl','IPv6CheckUrl','IntervalMinutes','AutoUpdate','UpdateCheckHours','UpdateChannel')) {
+    foreach ($name in @('Hostname','Username','UpdateUrl','IPv4Enabled','IPv6Enabled','IPv4CheckUrl','IPv6CheckUrl','AutoUpdate','UpdateCheckHours','UpdateChannel')) {
         # Use only explicitly supplied script arguments. An unspecified typed
         # [string] parameter can otherwise appear as an empty string and
         # erase defaults such as the DynDNS HTTPS endpoint.
@@ -148,6 +149,7 @@ function Save-Secret {
 }
 function Install-Task {
     param([int]$Minutes)
+    if ($Minutes -lt 1 -or $Minutes -gt 1440) { throw 'IntervalMinutes must be between 1 and 1440.' }
     $path = Join-Path $script:App 'PSDynDNS.ps1'
     $args = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $path + '" -ConfigPath "' + $script:ConfigPath + '"'
     $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument $args
@@ -155,6 +157,20 @@ function Install-Task {
     $principal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\LOCAL SERVICE' -LogonType ServiceAccount -RunLevel Limited -ProcessTokenSidType Unrestricted
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -StartWhenAvailable
     Register-ScheduledTask -TaskName $script:TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+}
+function Get-ExistingTaskInterval {
+    # The Scheduled Task is the only authoritative source for the interval.
+    $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
+    if (-not $task) { return 10 }
+    foreach ($trigger in @($task.Triggers)) {
+        $raw = [string]$trigger.Repetition.Interval
+        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+        try {
+            $minutes = [int]([Xml.XmlConvert]::ToTimeSpan($raw).TotalMinutes)
+            if ($minutes -ge 1 -and $minutes -le 1440) { return $minutes }
+        } catch { }
+    }
+    return 10
 }
 function Install-ClientFile {
     param([string]$Source)
@@ -189,7 +205,7 @@ if (-not $PSVersionTable.PSVersion -or $PSVersionTable.PSVersion.Major -ne 5) { 
 $script:TaskPrincipalSid = Get-TaskSid
 switch ($PSCmdlet.ParameterSetName) {
     Install {
-        if (Test-Path -LiteralPath $script:ConfigPath) { throw 'Already installed. Use -Configure or -Repair.' }
+        if (Test-Path -LiteralPath $script:ConfigPath) { throw 'Already installed. Pass setting parameters to reconfigure, or use -Repair.' }
         if (-not $Hostname) { throw 'Supply -Hostname for installation.' }
         Ensure-Directories
         $cfg = [pscustomobject]@{
@@ -197,13 +213,14 @@ switch ($PSCmdlet.ParameterSetName) {
             IPv4Enabled=$true; IPv6Enabled=$false
             IPv4CheckUrl='https://ipv4.nsupdate.info/myip'
             IPv6CheckUrl='https://ipv6.nsupdate.info/myip'
-            IntervalMinutes=10; AutoUpdate=$false; UpdateCheckHours=24; UpdateChannel='stable'
+            AutoUpdate=$false; UpdateCheckHours=24; UpdateChannel='stable'
         }
         $cfg = Apply-Settings $cfg
         Install-ClientFile $LocalClientPath
         Save-Settings $cfg
         Save-Secret
-        Install-Task ([int]$cfg.IntervalMinutes)
+        $minutes = if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes')) { [int]$IntervalMinutes } else { 10 }
+        Install-Task $minutes
         # Reapply permissions using Windows' registered NT TASK SID, not just the pre-registration hash.
         Ensure-Directories
         Set-ProtectedAcl (Join-Path $script:App 'PSDynDNS.ps1') -ClientRead
@@ -212,13 +229,17 @@ switch ($PSCmdlet.ParameterSetName) {
         Write-Host 'PSDynDNS installed.'
     }
     Configure {
+        $settings = @('Hostname','Username','UpdateUrl','IPv4Enabled','IPv6Enabled','IPv4CheckUrl','IPv6CheckUrl','AutoUpdate','UpdateCheckHours','UpdateChannel','IntervalMinutes')
+        if (@($settings | Where-Object { $script:InstallerBoundParameters.ContainsKey($_) }).Count -eq 0) {
+            throw 'No settings supplied. Pass the settings to change or use -Help.'
+        }
         $cfg = Apply-Settings (Read-Settings)
         Save-Settings $cfg
-        if ($PSBoundParameters.ContainsKey('IntervalMinutes')) { Install-Task ([int]$cfg.IntervalMinutes) }
+        if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes')) { Install-Task ([int]$IntervalMinutes) }
         Write-Host 'Configuration saved.'
     }
     Repair {
-        $cfg = Read-Settings
+        $minutes = if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes')) { [int]$IntervalMinutes } else { Get-ExistingTaskInterval }
         Ensure-Directories
         foreach ($name in @('config.json','secret.dpapi')) {
             $p = Join-Path $script:Root $name
@@ -228,7 +249,7 @@ switch ($PSCmdlet.ParameterSetName) {
         $client = Join-Path $script:App 'PSDynDNS.ps1'
         if (-not (Test-Path -LiteralPath $client)) { Install-ClientFile $LocalClientPath }
         else { Set-ProtectedAcl $client -ClientRead }
-        Install-Task ([int]$cfg.IntervalMinutes)
+        Install-Task $minutes
         Ensure-Directories
         Set-ProtectedAcl $client -ClientRead
         Set-ProtectedAcl $script:ConfigPath -ClientRead
