@@ -164,3 +164,44 @@ Describe 'Manual channel-based ForceUpgrade' {
         Should -Invoke Get-PublicAddress -Times 0
     }
 }
+
+Describe 'Additional mock-based network paths' {
+    It 'rejects an IPv6 reply when requesting IPv4' {
+        Mock Invoke-WebRequest { [pscustomobject]@{ Content='2606:4700:4700::1111' } }
+        { Get-PublicAddress -Url 'https://example.org/ip4' -Family ([Net.Sockets.AddressFamily]::InterNetwork) } | Should -Throw '*expected family*'
+    }
+    It 'rejects non-public IP response content' {
+        Mock Invoke-WebRequest { [pscustomobject]@{ Content='192.168.2.1' } }
+        { Get-PublicAddress -Url 'https://example.org/ip4' -Family ([Net.Sockets.AddressFamily]::InterNetwork) } | Should -Throw '*non-routable*'
+    }
+    It 'decodes binary DynDNS provider responses' {
+        $cfg = [pscustomobject]@{ Hostname='test.example.org';UpdateUrl='https://example.org/nic/update' }
+        Mock Invoke-WebRequest { [pscustomobject]@{ Content=[Text.Encoding]::UTF8.GetBytes('nochg 8.8.8.8') } }
+        Invoke-DynDnsRequest -Config $cfg -Secret 'synthetic-key' -AddressList '8.8.8.8' | Should -Be 'nochg 8.8.8.8'
+    }
+    It 'parses text DynDNS provider responses' {
+        $cfg = [pscustomobject]@{ Hostname='test.example.org';UpdateUrl='https://example.org/nic/update' }
+        Mock Invoke-WebRequest { [pscustomobject]@{ Content='good 8.8.8.8' } }
+        Invoke-DynDnsRequest -Config $cfg -Secret 'synthetic-key' -AddressList '8.8.8.8' | Should -Be 'good 8.8.8.8'
+    }
+    It 'fails closed when two DNS resolvers disagree' {
+        Mock Resolve-DnsName {
+            if ($Server -eq '8.8.8.8') {
+                [pscustomobject]@{ Type='A';IPAddress='82.149.168.179' }
+            } else {
+                [pscustomobject]@{ Type='A';IPAddress='82.149.168.178' }
+            }
+        }
+        { Get-PublishedDnsAddresses -Hostname 'host.example.org' -RecordType A -Servers @('8.8.8.8','8.8.4.4') } | Should -Throw '*disagree*'
+    }
+    It 'matches configured IPv6 AAAA to public IPv6' {
+        Mock Get-PublishedDnsAddresses { '2606:4700:4700::1111' }
+        $result = Get-DnsComparison -Hostname 'host.example.org' -Servers @('8.8.8.8') -IPv6 '2606:4700:4700::1111' -IPv4Enabled $false -IPv6Enabled $true
+        $result.Matches | Should -BeTrue
+    }
+    It 'detects mismatched IPv6 AAAA records' {
+        Mock Get-PublishedDnsAddresses { '2606:4700:4700::1001' }
+        $result = Get-DnsComparison -Hostname 'host.example.org' -Servers @('8.8.8.8') -IPv6 '2606:4700:4700::1111' -IPv4Enabled $false -IPv6Enabled $true
+        $result.Matches | Should -BeFalse
+    }
+}
