@@ -1,0 +1,50 @@
+name: PowerShell CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse Windows PowerShell 5.1 scripts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($file in @('PSDynDNS.ps1','Install-PSDynDNS.ps1')) {
+            $tokens = $null
+            $parseErrors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file), [ref]$tokens, [ref]$parseErrors)
+            if ($parseErrors.Count) { $parseErrors | Format-List | Out-String | Write-Error; exit 1 }
+          }
+      - name: Install Pester 5
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99 -Force -Scope CurrentUser -SkipPublisherCheck
+      - name: Run Pester tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = Invoke-Pester -Path ./tests -PassThru -Output Detailed
+          if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { exit 1 }
+      - name: Assemble development package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Compress-Archive -Path PSDynDNS.ps1,Install-PSDynDNS.ps1,config.example.json,README.md,LICENSE -DestinationPath dist/PSDynDNS-dev.zip -Force
+          Get-FileHash dist/PSDynDNS-dev.zip -Algorithm SHA256 | Format-List | Out-String | Set-Content dist/PSDynDNS-dev.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PSDynDNS-development
+          path: dist/*
+          if-no-files-found: error
