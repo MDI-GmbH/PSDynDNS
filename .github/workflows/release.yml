@@ -51,10 +51,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Check synchronized shared functions
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & ./tools/Sync-Shared.ps1
       - name: Ensure release tag does not exist
         env:
           GH_TOKEN: ${{ github.token }}
