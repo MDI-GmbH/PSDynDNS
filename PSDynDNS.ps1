@@ -422,7 +422,7 @@ function Start-SelfUpdate {
     try {
         # Stale stages must be removable; do not accumulate alternate filenames.
         if (Test-Path -LiteralPath $newFile) {
-            Remove-Item -LiteralPath $newFile -Force -ErrorAction Stop
+            [IO.File]::Delete($newFile)
         }
         # A new attempt replaces any previous result only after staging has
         # been validated. A missing result is not interpreted as success.
@@ -452,7 +452,7 @@ try {
     Set-Acl -LiteralPath $Staged -AclObject $stagedAcl
     # Do not discard the previous backup unless the installed client is intact.
     if (Test-Path -LiteralPath $Backup) {
-        Remove-Item -LiteralPath $Backup -Force -ErrorAction Stop
+        [IO.File]::Delete($Backup)
     }
     Move-Item -LiteralPath $Original -Destination $Backup -ErrorAction Stop
     try {
@@ -481,7 +481,7 @@ try {
     $record | ConvertTo-Json -Compress | Set-Content -LiteralPath $tempResult -Encoding UTF8
     Move-Item -LiteralPath $tempResult -Destination $Result -Force
 } catch {}
-Remove-Item -LiteralPath $Staged -Force -ErrorAction SilentlyContinue
+try { [IO.File]::Delete($Staged) } catch {}
 Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
 if ($outcome -ne 'success') { exit 1 }
 '@
@@ -504,7 +504,7 @@ if ($outcome -ne 'success') { exit 1 }
         Remove-Item -LiteralPath $resultFile -Force -ErrorAction SilentlyContinue
         Start-Process -FilePath $exe -ArgumentList $args -WindowStyle Hidden | Out-Null
     } catch {
-        Remove-Item -LiteralPath $newFile -Force -ErrorAction SilentlyContinue
+        try { [IO.File]::Delete($newFile) } catch {}
         throw
     }
 }
