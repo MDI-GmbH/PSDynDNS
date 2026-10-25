@@ -191,7 +191,7 @@ try {
     $canWriteSecret = $true
 } catch {}
 # Installer-protected update files grant DELETE but never content write.
-$stale = Join-Path $PSScriptRoot 'CI-Orphan.ps1.new'
+$stale = Join-Path $PSScriptRoot 'PSDynDNS.ps1.new'
 try {
     $staleStageStep = 'create orphan'
     [IO.File]::WriteAllText($stale, 'stale')
@@ -201,6 +201,14 @@ try {
     $access = [Security.AccessControl.AccessControlSections]::Access
     $acl.SetSecurityDescriptorSddlForm($clientAcl.GetSecurityDescriptorSddlForm($access), $access)
     Set-Acl -LiteralPath $stale -AclObject $acl
+    $staleStageStep = 'check DELETE permission'
+    $taskSid = New-Object Security.Principal.SecurityIdentifier(((& (Join-Path $env:SystemRoot 'System32\schtasks.exe') /ShowSid /TN PSDynDNS 2>&1 | Out-String | Select-String 'S-1-5-87-(?:[0-9]+-){4}[0-9]+').Matches.Value | Select-Object -First 1))
+    $deleteRules = @((Get-Acl -LiteralPath $stale).Access | Where-Object {
+        $_.IdentityReference -eq $taskSid -or $_.IdentityReference.Value -eq $taskSid.Value
+    })
+    if (-not @($deleteRules | Where-Object { ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Delete) -ne 0 }).Count) {
+        throw 'Protected staging file is missing task-specific Delete permission.'
+    }
     $staleStageStep = 'remove protected orphan'
     Remove-Item -LiteralPath $stale -Force -ErrorAction Stop
     $staleStageStep = 'create replacement'
