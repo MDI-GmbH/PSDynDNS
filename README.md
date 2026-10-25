@@ -1,7 +1,7 @@
 # PSDynDNS
 
 [![CI](https://github.com/MDI-GmbH/PSDynDNS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MDI-GmbH/PSDynDNS/actions/workflows/ci.yml)
-[![Coverage (dev)](https://codecov.io/gh/MDI-GmbH/PSDynDNS/branch/dev/graph/badge.svg)](https://app.codecov.io/gh/MDI-GmbH/PSDynDNS/tree/dev)
+[![Coverage (main)](https://codecov.io/gh/MDI-GmbH/PSDynDNS/branch/main/graph/badge.svg)](https://app.codecov.io/gh/MDI-GmbH/PSDynDNS/tree/main)
 [![Release](https://img.shields.io/github/v/release/MDI-GmbH/PSDynDNS?include_prereleases&label=release)](https://github.com/MDI-GmbH/PSDynDNS/releases)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -164,7 +164,7 @@ The log rotates at approximately 1 MiB (`client.log.1`). `state.json` stores ret
 
 - [PowerShell CI](.github/workflows/ci.yml) runs Pester and Windows integration tests in parallel under PowerShell 5.1 and 7, requires **75% coverage** in both, then verifies a test release package without publishing it.
 - [Publish Release](.github/workflows/release.yml) runs manually on `main`, repeats CI, and publishes verified assets and release notes.
-- Contributions go through pull requests. Real-provider and version-specific Windows Server compatibility require field validation.
+- Create short-lived feature/fix branches from `main` and merge through pull requests. Real-provider and version-specific Windows Server compatibility require field validation.
 
 Downloads and release notes: [GitHub Releases](https://github.com/MDI-GmbH/PSDynDNS/releases).
 
