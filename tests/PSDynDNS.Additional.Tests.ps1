@@ -8,7 +8,7 @@ BeforeAll {
     $ast = [Management.Automation.Language.Parser]::ParseFile(
         $installerPath, [ref]$tokens, [ref]$errors)
     if ($errors.Count) { throw 'Installer did not parse.' }
-    foreach ($name in @('Save-Settings','Save-Secret','Apply-Settings','Read-Settings')) {
+    foreach ($name in @('Save-Settings','Save-Secret','Apply-Settings','Read-Settings','Install-Task','Get-ExistingTaskInterval')) {
         $found = @($ast.FindAll({
             param($node)
             $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
@@ -253,6 +253,26 @@ Describe 'Client HTTP, release and logging edge cases' {
         }
         (Read-ClientState (Join-Path $root 'runtime\state.json')).LastIPv6 |
             Should -Be '2606:4700:4700::1111'
+    }
+}
+
+Describe 'Installer schedule defaults and validation' {
+    It 'rejects unsupported task intervals before registering any task' {
+        { Install-Task -Minutes 0 } | Should -Throw '*IntervalMinutes*'
+        { Install-Task -Minutes 1441 } | Should -Throw '*IntervalMinutes*'
+    }
+    It 'uses a ten-minute fallback for missing or invalid scheduled-task intervals' {
+        $script:TaskName = 'PSDynDNS-CI-NoTask'
+        Mock Get-ScheduledTask { $null }
+        Get-ExistingTaskInterval | Should -Be 10
+        Mock Get-ScheduledTask {
+            [pscustomobject]@{
+                Triggers=@([pscustomobject]@{
+                    Repetition=[pscustomobject]@{ Interval='invalid-interval' }
+                })
+            }
+        }
+        Get-ExistingTaskInterval | Should -Be 10
     }
 }
 
