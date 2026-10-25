@@ -179,6 +179,20 @@ function Move-Item {
     Assert-Ci ($errorRecord.Result -eq 'failed') 'Failed replacement writes a failure result'
     Assert-Ci ([string]$errorRecord.Error -match 'Replacement failed; original restored') 'Failure result describes swap error and successful rollback'
     Assert-Ci ([string]$errorRecord.Error -match 'Deliberately injected second move failure') 'Failure result preserves the underlying replacement exception'
+    [IO.File]::WriteAllText($stage, 'Write-Host "retry"', $utf8)
+    $env:PSDYNDNS_CI_FAIL_ROLLBACK = '1'
+    try {
+        $rollbackOutput = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $helper -ParentPid 0 -Original $original -Staged $stage -Backup $backup -Digest (Hash-Ci $stage) -Result (Join-Path $dir 'update-result.json') 2>&1
+        $exit = $LASTEXITCODE
+        Assert-Ci ($exit -ne 0) 'Simultaneous swap and rollback failures cause nonzero exit'
+        $both = Get-Content -LiteralPath (Join-Path $dir 'update-result.json') -Raw | ConvertFrom-Json
+        Assert-Ci ($both.Result -eq 'failed') 'Dual failure is reported'
+        Assert-Ci ([string]$both.Error -match 'Deliberately injected second move failure') 'Dual failure preserves replacement error'
+        Assert-Ci ([string]$both.Error -match 'Deliberately injected rollback move failure') 'Dual failure includes rollback error'
+        Assert-Ci ((Hash-Ci $backup) -eq $originalHash) 'Failed rollback retains original bytes in backup'
+    } finally {
+        Remove-Item Env:PSDYNDNS_CI_FAIL_ROLLBACK -ErrorAction SilentlyContinue
+    }
     # The injected rollback failure is expected and already asserted above.
     # GitHub Actions' PowerShell wrappers exit using LASTEXITCODE when it exists,
     # even after every subsequent PowerShell assertion has passed. Clear only
