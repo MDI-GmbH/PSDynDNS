@@ -125,6 +125,59 @@ Describe 'Client HTTP, release and logging edge cases' {
         finally { $lock.Dispose() }
         (Get-Content -LiteralPath $path -Raw) | Should -Be '{}'
     }
+    It 'preserves prior successful check time when an attempt is throttled' {
+        $root = Join-Path $TestDrive 'attempt-window'
+        [IO.Directory]::CreateDirectory($root) | Out-Null
+        $path = Join-Path $root 'state.json'
+        $state = Read-ClientState $path
+        $state.LastUpdateAttemptUtc = [datetime]::UtcNow.ToString('o')
+        Save-ClientState $path $state
+        $cfg = [pscustomobject]@{AutoUpdate=$true;UpdateCheckHours=24;UpdateChannel='beta'}
+        Mock Get-UpdateCandidate { throw 'GitHub must not be queried during retry window' }
+        Invoke-SoftwareUpdate $cfg $state $path (Join-Path $root 'client.log')
+        Should -Invoke Get-UpdateCandidate -Times 0 -Exactly
+        (Read-ClientState $path).LastSuccessfulUpdateCheckUtc | Should -BeNullOrEmpty
+    }
+
+    It 'compares alpha, beta, rc and final release ordering at the same version' {
+        $previousVersion = $script:Version
+        try {
+            $script:Version = '1.2.3-beta.2'
+            $candidate = [pscustomobject]@{Channel='beta';Version=[version]'1.2.3';Rank=2;PreNumber=3}
+            Test-CandidateNewer $candidate | Should -BeTrue
+            $candidate.PreNumber = 1
+            Test-CandidateNewer $candidate | Should -BeFalse
+            $candidate.Rank = 3
+            Test-CandidateNewer $candidate | Should -BeTrue
+            $candidate.Rank = 1
+            Test-CandidateNewer $candidate | Should -BeFalse
+            $candidate.Rank = 4
+            Test-CandidateNewer $candidate | Should -BeTrue
+        } finally { $script:Version = $previousVersion }
+    }
+
+    It 'updates only IPv6 when IPv4 is disabled' {
+        $root = Join-Path $TestDrive 'ipv6-only'
+        [IO.Directory]::CreateDirectory($root) | Out-Null
+        [IO.Directory]::CreateDirectory((Join-Path $root 'runtime')) | Out-Null
+        $configPath = Join-Path $root 'config.json'
+        [pscustomobject]@{
+            Hostname='host.example.org';UpdateUrl='https://example.org/nic/update'
+            IPv4Enabled=$false;IPv6Enabled=$true
+            IPv6CheckUrl='https://example.org/ip6';AutoUpdate=$false
+        } | ConvertTo-Json | Set-Content -LiteralPath $configPath -Encoding UTF8
+        Mock Get-PublicAddress { '2606:4700:4700::1111' }
+        Mock Get-DnsComparison { [pscustomobject]@{Matches=$false;Observation='A=;AAAA='} }
+        Mock Read-MachineSecret { 'synthetic' }
+        Mock Invoke-DynDnsRequest { 'good 2606:4700:4700::1111' }
+        { Invoke-Client $configPath $false } | Should -Not -Throw
+        Should -Invoke Get-PublicAddress -Times 1 -Exactly -ParameterFilter {
+            $Family -eq [Net.Sockets.AddressFamily]::InterNetworkV6
+        }
+        Should -Invoke Invoke-DynDnsRequest -Times 1 -Exactly -ParameterFilter {
+            $AddressList -eq '2606:4700:4700::1111'
+        }
+    }
     It 'sends both IPv4 and IPv6 when configured for dual stack' {
         $root = Join-Path $TestDrive 'dual-stack'
         [IO.Directory]::CreateDirectory($root) | Out-Null
