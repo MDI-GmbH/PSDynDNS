@@ -162,6 +162,19 @@ Describe 'Installer atomic configuration and secret preservation' {
         (Get-FileHash -LiteralPath $script:ConfigPath -Algorithm SHA256).Hash | Should -Be $before
         (Test-Path -LiteralPath ($script:ConfigPath + '.new')) | Should -BeFalse
     }
+    It 'rejects invalid configuration without modifying the installed file' {
+        $cfg = [pscustomobject]@{
+            Hostname='host.example.org';UpdateUrl='https://example.org/update'
+            IPv4Enabled=$true;IPv6Enabled=$false
+            IPv4CheckUrl='https://example.org/ip4'
+        }
+        Save-Settings $cfg
+        $hash = (Get-FileHash -LiteralPath $script:ConfigPath -Algorithm SHA256).Hash
+        $cfg.UpdateUrl = 'http://insecure.example.org/update'
+        { Save-Settings $cfg } | Should -Throw '*Invalid HTTPS*'
+        (Get-FileHash -LiteralPath $script:ConfigPath -Algorithm SHA256).Hash | Should -Be $hash
+        (Test-Path -LiteralPath ($script:ConfigPath + '.new')) | Should -BeFalse
+    }
     It 'preserves the previous machine DPAPI secret when replacement is blocked' {
         $path = Join-Path $script:Root 'secret.dpapi'
         $script:CredentialSecret = ConvertTo-SecureString 'synthetic-first' -AsPlainText -Force
