@@ -246,6 +246,7 @@ try {
 $result = [pscustomobject]@{
     CanSwapProtectedClient=$canSwapProtectedClient
     CanRecoverStaleStage=$canRecoverStaleStage
+    UpdaterCleanedProtectedStage=$updaterCleanedProtectedStage
     CanReadConfigAndDpapi=$canRead
     CanWriteRuntime=$canWriteRuntime
     CanWriteApp=$canWriteApp
@@ -408,6 +409,7 @@ try {
             Assert-True $probe.CanWriteApp 'Task can modify app directory for updates'
             Assert-True $probe.CanSwapProtectedClient 'LOCAL SERVICE can replace protected script under installed ACLs'
             Assert-True $probe.CanRecoverStaleStage 'LOCAL SERVICE can delete and recreate a protected staging file'
+            Assert-True $probe.UpdaterCleanedProtectedStage 'LOCAL SERVICE Start-SelfUpdate replaces protected stale stage'
             Assert-True (-not $probe.CanWriteConfig) 'Task cannot modify configuration'
             Assert-True (-not $probe.CanWriteSecret) 'Task cannot modify secret'
 
