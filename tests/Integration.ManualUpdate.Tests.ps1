@@ -15,7 +15,8 @@ BeforeAll {
         $_.Item1.Extent.Text -eq 'UpdateClient'
     })
     if ($clauses.Count -ne 1) { throw 'Expected exactly one UpdateClient installer branch.' }
-    $script:UpdateClientBody = [scriptblock]::Create($clauses[0].Item2.Extent.Text)
+    $bodyText = $clauses[0].Item2.Extent.Text
+    $script:UpdateClientBody = [scriptblock]::Create($bodyText.Substring(1, $bodyText.Length - 2))
 
     function Read-Settings { return $script:FakeConfig }
     function Install-ClientFile {
@@ -40,7 +41,7 @@ BeforeAll {
     function Disable-ScheduledTask {
         [CmdletBinding()]
         param([string]$TaskName)
-        $script:FakeTaskState = 'Disabled'
+        if ($script:FakeTaskState -ne 'Running') { $script:FakeTaskState = 'Disabled' }
     }
     function Enable-ScheduledTask {
         [CmdletBinding()]
@@ -51,7 +52,7 @@ BeforeAll {
         [CmdletBinding()]
         param([string]$TaskName)
         $script:StopCalls++
-        $script:FakeTaskState = 'Ready'
+        $script:FakeTaskState = 'Disabled'
     }
     function Copy-Item {
         [CmdletBinding()]
