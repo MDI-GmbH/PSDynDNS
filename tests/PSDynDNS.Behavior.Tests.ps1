@@ -198,14 +198,20 @@ Describe 'Shared semantic release selection' {
     }
     It 'selects the highest version rather than the first GitHub API result' {
         $digest = 'sha256:' + ('a' * 64)
-        $asset = [pscustomobject]@{
-            name='PSDynDNS.ps1';digest=$digest
-            browser_download_url='https://github.com/MDI-GmbH/PSDynDNS/releases/download/v0.2.0-beta.10/PSDynDNS.ps1'
+        function New-TestRelease {
+            param([string]$Tag,[bool]$Prerelease)
+            [pscustomobject]@{
+                tag_name=$Tag;draft=$false;prerelease=$Prerelease
+                assets=@([pscustomobject]@{
+                    name='PSDynDNS.ps1';digest=$digest
+                    browser_download_url=('https://github.com/MDI-GmbH/PSDynDNS/releases/download/' + $Tag + '/PSDynDNS.ps1')
+                })
+            }
         }
         $releases = @(
-            [pscustomobject]@{tag_name='v0.2.0-beta.2';draft=$false;prerelease=$true;assets=@($asset)}
-            [pscustomobject]@{tag_name='v0.2.0-beta.10';draft=$false;prerelease=$true;assets=@($asset)}
-            [pscustomobject]@{tag_name='v0.1.9';draft=$false;prerelease=$false;assets=@($asset)}
+            (New-TestRelease 'v0.2.0-beta.2' $true)
+            (New-TestRelease 'v0.2.0-beta.10' $true)
+            (New-TestRelease 'v0.1.9' $false)
         )
         (Select-PSDynDnsRelease -Releases $releases -Channel beta).Tag | Should -Be 'v0.2.0-beta.10'
         (Select-PSDynDnsRelease -Releases $releases -Channel stable).Tag | Should -Be 'v0.1.9'
