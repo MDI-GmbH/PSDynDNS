@@ -315,11 +315,14 @@ function Install-Task {
         Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     }
     $action = New-ScheduledTaskAction -Execute $exe -Argument $args
-    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $Minutes)
+    $intervalTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $Minutes)
+    # Delay the first run after boot until networking and DNS services can initialize.
+    $startupTrigger = New-ScheduledTaskTrigger -AtStartup
+    $startupTrigger.Delay = 'PT1M'
     # Use the well-known LocalService SID so registration works on all Windows UI languages.
     $principal = New-ScheduledTaskPrincipal -UserId $script:ServiceSid -LogonType ServiceAccount -RunLevel Limited -ProcessTokenSidType Unrestricted
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -StartWhenAvailable
-    Register-ScheduledTask -TaskName $script:TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+    Register-ScheduledTask -TaskName $script:TaskName -Action $action -Trigger @($intervalTrigger,$startupTrigger) -Principal $principal -Settings $settings -Force | Out-Null
 }
 function Get-ExistingTaskRuntime {
     $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
