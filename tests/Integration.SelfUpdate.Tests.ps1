@@ -23,7 +23,7 @@ try {
     }
     $candidate = [pscustomobject]@{
         Channel=$channel
-        Content=if ($channel -eq 'main') { [IO.File]::ReadAllBytes($env:PSDYNDNS_CI_PAYLOAD) } else { $null }
+        Content=$(if ($channel -eq 'main') { [IO.File]::ReadAllBytes($env:PSDYNDNS_CI_PAYLOAD) } else { $null })
         Url='https://github.com/MDI-GmbH/PSDynDNS/releases/download/v9.0.0-beta.1/PSDynDNS.ps1'
         Sha256=$env:PSDYNDNS_CI_DIGEST
     }
