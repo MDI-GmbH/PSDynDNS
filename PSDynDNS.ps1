@@ -262,7 +262,13 @@ function Invoke-DynDnsRequest {
         }
         return ([string]$response.Content).Trim()
     } catch {
-        if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 401) { return 'badauth' }
+        # Not every network or PowerShell exception exposes an HTTP response.
+        $responseProperty = $_.Exception.PSObject.Properties['Response']
+        $statusProperty = $null
+        if ($null -ne $responseProperty -and $null -ne $responseProperty.Value) {
+            $statusProperty = $responseProperty.Value.PSObject.Properties['StatusCode']
+        }
+        if ($null -ne $statusProperty -and [int]$statusProperty.Value -eq 401) { return 'badauth' }
         throw
     }
 }
