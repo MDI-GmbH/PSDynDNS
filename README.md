@@ -83,6 +83,8 @@ The default provider is `https://nsupdate.info/nic/update`. DNS resolvers defaul
 
 Manual `-UpdateClient` verifies the replacement, creates a timestamped backup, and preserves configuration, credentials, and task settings.
 
+Automatic updates use a single `PSDynDNS.ps1.new` staging file and retain one `PSDynDNS.ps1.bak` backup. Previously protected staging files are removed using the task's existing directory-level delete permission. If the installed client is missing, keep the backup and repair manually.
+
 ## Update channels
 
 Automatic software updates are **disabled by default**. Enable them with:

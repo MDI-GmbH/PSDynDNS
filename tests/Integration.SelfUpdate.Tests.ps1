@@ -55,13 +55,19 @@ function Wait-CiHash {
     return $false
 }
 function Invoke-CiUpdate {
-    param([string]$Case,[string]$NewText,[bool]$BadDigest=$false)
+    param([string]$Case,[string]$NewText,[bool]$BadDigest=$false,[bool]$StaleStage=$false,[bool]$OldBackup=$false)
     $dir = Join-Path $testRoot $Case
     [IO.Directory]::CreateDirectory($dir) | Out-Null
     $client = Join-Path $dir 'PSDynDNS.ps1'
     $payload = Join-Path $dir 'payload.txt'
     [IO.File]::WriteAllText($client,$fixture,$utf8)
     [IO.File]::WriteAllText($payload,$NewText,$utf8)
+    if ($StaleStage) {
+        [IO.File]::WriteAllText(($client + '.new'), 'orphaned staging',$utf8)
+    }
+    if ($OldBackup) {
+        [IO.File]::WriteAllText(($client + '.bak'), 'prior backup',$utf8)
+    }
     $old = Hash-Ci $client
     $new = Hash-Ci $payload
     $env:PSDYNDNS_CI_PAYLOAD = $payload
@@ -122,6 +128,43 @@ try {
     Assert-Ci (Wait-CiHash -File $good.Backup -Hash $good.OldHash) 'Helper backs up previous client'
     Assert-Ci (-not (Test-Path -LiteralPath $good.Stage)) 'Helper consumes staged update'
 
+    $retry = Invoke-CiUpdate -Case 'stale-stage-and-backup' -NewText 'Write-Host "retry succeeded"' -StaleStage $true -OldBackup $true
+    Assert-Ci ($retry.ExitCode -eq 0) 'Retry starts with existing staging and backup'
+    Assert-Ci (Wait-CiHash -File $retry.Target -Hash $retry.NewHash) 'Retry replaces client despite stale stage'
+    Assert-Ci (-not (Test-Path -LiteralPath $retry.Stage)) 'Retry consumes the stale stage'
+    Assert-Ci ((Hash-Ci $retry.Backup) -eq $retry.OldHash) 'Retry replaces old backup with the previous installed client'
+    Assert-Ci (@(Get-ChildItem -LiteralPath (Split-Path -Parent $retry.Target) -Filter 'PSDynDNS.ps1.bak*').Count -eq 1) 'Only one automatic backup is retained'
+    Assert-Ci (@(Get-ChildItem -LiteralPath (Split-Path -Parent $retry.Target) -Filter 'PSDynDNS.ps1.new*').Count -eq 0) 'No staging files accumulate'
+
+    # A backup in use must not be deleted or cause the installed client to move.
+    $lockedDir = Join-Path $testRoot 'locked-backup'
+    [IO.Directory]::CreateDirectory($lockedDir) | Out-Null
+    $lockedOriginal = Join-Path $lockedDir 'PSDynDNS.ps1'
+    $lockedStage = $lockedOriginal + '.new'
+    $lockedBackup = $lockedOriginal + '.bak'
+    $lockedHelper = Join-Path $lockedDir 'swap.ps1'
+    $lockedResultPath = Join-Path $lockedDir 'update-result.json'
+    [IO.File]::WriteAllText($lockedOriginal, 'Write-Host "installed"', $utf8)
+    [IO.File]::WriteAllText($lockedStage, 'Write-Host "candidate"', $utf8)
+    [IO.File]::WriteAllText($lockedBackup, 'Write-Host "previous backup"', $utf8)
+    [IO.File]::WriteAllText($lockedHelper, (Get-RealHelper), $utf8)
+    $installedHash = Hash-Ci $lockedOriginal
+    $previousBackupHash = Hash-Ci $lockedBackup
+    $lockedStream = [IO.File]::Open($lockedBackup, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $lockedOutput = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $lockedHelper -ParentPid 0 -Original $lockedOriginal -Staged $lockedStage -Backup $lockedBackup -Digest (Hash-Ci $lockedStage) -Result $lockedResultPath 2>&1
+        $lockedExit = $LASTEXITCODE
+    } finally {
+        $lockedStream.Dispose()
+    }
+    Assert-Ci ($lockedExit -ne 0) 'Locked backup prevents helper replacement'
+    $lockedResult = Get-Content -LiteralPath $lockedResultPath -Raw | ConvertFrom-Json
+    Assert-Ci ($lockedResult.Result -eq 'failed') 'Backup deletion failure writes a failed result'
+    Assert-Ci ([string]$lockedResult.Error -match 'MethodInvocationException|IOException|UnauthorizedAccessException') 'Backup deletion failure records its exception type'
+    Assert-Ci ([string]$lockedResult.Error -match 'PSDynDNS[.]ps1[.]bak') 'Backup deletion failure identifies the backup'
+    Assert-Ci ((Hash-Ci $lockedOriginal) -eq $installedHash) 'Backup deletion failure preserves installed client bytes'
+    Assert-Ci ((Hash-Ci $lockedBackup) -eq $previousBackupHash) 'Backup deletion failure preserves prior backup bytes'
+
     # Inject a deterministic failure at the SECOND move operation.
     # Place the fault-injection function in the SAME script scope as the
     # extracted production helper. A wrapper script around the helper
@@ -139,9 +182,12 @@ try {
     $injection = @'
 function Move-Item {
     [CmdletBinding()]
-    param([string]$LiteralPath,[string]$Destination)
+    param([string]$LiteralPath,[string]$Destination,[switch]$Force)
     if ($LiteralPath -eq $Staged -and $Destination -eq $Original) {
         throw 'Deliberately injected second move failure'
+    }
+    if ($env:PSDYNDNS_CI_FAIL_ROLLBACK -eq '1' -and $LiteralPath -eq $Backup -and $Destination -eq $Original) {
+        throw 'Deliberately injected rollback move failure'
     }
     Microsoft.PowerShell.Management\Move-Item @PSBoundParameters
 }
@@ -158,6 +204,27 @@ function Move-Item {
     Assert-Ci (Test-Path -LiteralPath $original -PathType Leaf) 'Rollback restores original file'
     Assert-Ci ((Hash-Ci $original) -eq $originalHash) 'Rollback restores original bytes'
     Assert-Ci (-not (Test-Path -LiteralPath $backup)) 'Rollback consumes temporary backup'
+    $errorRecord = Get-Content -LiteralPath (Join-Path $dir 'update-result.json') -Raw | ConvertFrom-Json
+    Assert-Ci ($errorRecord.Result -eq 'failed') 'Failed replacement writes a failure result'
+    Assert-Ci ([string]$errorRecord.Error -match 'Replacement failed; original restored') 'Failure result describes swap error and successful rollback'
+    Assert-Ci ([string]$errorRecord.Error -match 'Deliberately injected second move failure') 'Failure result preserves the underlying replacement exception'
+    # The helper deletes itself after each run, so recreate it for this separate failure scenario.
+    [IO.File]::WriteAllText($helper, $injectedHelper, $utf8)
+    [IO.File]::Delete((Join-Path $dir 'update-result.json'))
+    [IO.File]::WriteAllText($stage, 'Write-Host "retry"', $utf8)
+    $env:PSDYNDNS_CI_FAIL_ROLLBACK = '1'
+    try {
+        $rollbackOutput = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $helper -ParentPid 0 -Original $original -Staged $stage -Backup $backup -Digest (Hash-Ci $stage) -Result (Join-Path $dir 'update-result.json') 2>&1
+        $exit = $LASTEXITCODE
+        Assert-Ci ($exit -ne 0) 'Simultaneous swap and rollback failures cause nonzero exit'
+        $both = Get-Content -LiteralPath (Join-Path $dir 'update-result.json') -Raw | ConvertFrom-Json
+        Assert-Ci ($both.Result -eq 'failed') 'Dual failure is reported'
+        Assert-Ci ([string]$both.Error -match 'Deliberately injected second move failure') 'Dual failure preserves replacement error'
+        Assert-Ci ([string]$both.Error -match 'Deliberately injected rollback move failure') 'Dual failure includes rollback error'
+        Assert-Ci ((Hash-Ci $backup) -eq $originalHash) 'Failed rollback retains original bytes in backup'
+    } finally {
+        Remove-Item Env:PSDYNDNS_CI_FAIL_ROLLBACK -ErrorAction SilentlyContinue
+    }
     # The injected rollback failure is expected and already asserted above.
     # GitHub Actions' PowerShell wrappers exit using LASTEXITCODE when it exists,
     # even after every subsequent PowerShell assertion has passed. Clear only

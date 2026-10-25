@@ -165,6 +165,7 @@ $canWriteApp = $false
 $canWriteConfig = $false
 $canWriteSecret = $false
 $canSwapProtectedClient = $false
+$canRecoverStaleStage = $false
 try {
     $path = Join-Path $runtime 'service-probe.tmp'
     [IO.File]::WriteAllText($path,'ok')
@@ -187,6 +188,39 @@ try {
     $stream.Dispose()
     $canWriteSecret = $true
 } catch {}
+# The app directory grants DELETE_CHILD even when the staged file is read-only.
+$stale = Join-Path $PSScriptRoot 'PSDynDNS.ps1.new'
+try {
+    [IO.File]::WriteAllText($stale, 'stale')
+    $acl = Get-Acl -LiteralPath $stale
+    $clientAcl = Get-Acl -LiteralPath (Join-Path $PSScriptRoot 'PSDynDNS.ps1')
+    $access = [Security.AccessControl.AccessControlSections]::Access
+    $acl.SetSecurityDescriptorSddlForm($clientAcl.GetSecurityDescriptorSddlForm($access), $access)
+    Set-Acl -LiteralPath $stale -AclObject $acl
+    [IO.File]::Delete($stale)
+    [IO.File]::WriteAllText($stale, 'replacement')
+    $canRecoverStaleStage = ([IO.File]::ReadAllText($stale) -eq 'replacement')
+} catch {
+    Write-Host ('Protected stage cleanup failed: ' + $_.Exception.Message)
+} finally {
+    try { [IO.File]::Delete($stale) } catch {}
+}
+# Verify that Start-SelfUpdate itself cleans a protected abandoned stage.
+$updaterCleanedProtectedStage = $false
+try {
+    [IO.File]::WriteAllText($stale,'old stage')
+    $stageAcl = Get-Acl -LiteralPath $stale
+    $sourceAcl = Get-Acl -LiteralPath (Join-Path $PSScriptRoot 'PSDynDNS.ps1')
+    $section = [Security.AccessControl.AccessControlSections]::Access
+    $stageAcl.SetSecurityDescriptorSddlForm($sourceAcl.GetSecurityDescriptorSddlForm($section),$section)
+    Set-Acl -LiteralPath $stale -AclObject $stageAcl
+    $payload = [IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'PSDynDNS.ps1'))
+    $digest = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'PSDynDNS.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()
+    Start-SelfUpdate ([pscustomobject]@{Channel='main';Content=$payload;Sha256=$digest})
+    $updaterCleanedProtectedStage = ((Get-FileHash -LiteralPath $stale -Algorithm SHA256).Hash.ToLowerInvariant() -eq $digest)
+} catch {
+    Write-Host ('Updater stage cleanup failed: ' + $_.Exception.Message)
+}
 # Verify the production replacement moves under the actual task identity.
 $fixture = Join-Path $PSScriptRoot 'CI-ACL-Original.ps1'
 $stage = $fixture + '.new'
@@ -211,6 +245,8 @@ try {
 }
 $result = [pscustomobject]@{
     CanSwapProtectedClient=$canSwapProtectedClient
+    CanRecoverStaleStage=$canRecoverStaleStage
+    UpdaterCleanedProtectedStage=$updaterCleanedProtectedStage
     CanReadConfigAndDpapi=$canRead
     CanWriteRuntime=$canWriteRuntime
     CanWriteApp=$canWriteApp
@@ -372,6 +408,12 @@ try {
             Assert-True $probe.CanWriteRuntime 'Task can modify runtime directory'
             Assert-True $probe.CanWriteApp 'Task can modify app directory for updates'
             Assert-True $probe.CanSwapProtectedClient 'LOCAL SERVICE can replace protected script under installed ACLs'
+            Assert-True $probe.CanRecoverStaleStage 'LOCAL SERVICE can delete and recreate a protected staging file'
+            Assert-True $probe.UpdaterCleanedProtectedStage 'LOCAL SERVICE Start-SelfUpdate replaces protected stale stage'
+            $updateResultPath = Join-Path $script:InstallRoot 'runtime\update-result.json'
+            Wait-File -Path $updateResultPath
+            $helperResult = Get-Content -LiteralPath $updateResultPath -Raw | ConvertFrom-Json
+            Assert-Equal $helperResult.Result 'success' 'Protected-stage updater completes the actual file swap'
             Assert-True (-not $probe.CanWriteConfig) 'Task cannot modify configuration'
             Assert-True (-not $probe.CanWriteSecret) 'Task cannot modify secret'
 

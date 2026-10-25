@@ -415,6 +415,10 @@ function Start-SelfUpdate {
     $runtime = Join-Path (Split-Path -Parent (Split-Path -Parent $target)) 'runtime'
     $resultFile = Join-Path $runtime 'update-result.json'
     try {
+        # Stale stages must be removable; do not accumulate alternate filenames.
+        if (Test-Path -LiteralPath $newFile) {
+            [IO.File]::Delete($newFile)
+        }
         # A new attempt replaces any previous result only after staging has
         # been validated. A missing result is not interpreted as success.
         if ($Release.Channel -eq 'main') { [IO.File]::WriteAllBytes($newFile,$Release.Content) }
@@ -428,6 +432,8 @@ function Start-SelfUpdate {
         $helper = @'
 param([int]$ParentPid,[string]$Original,[string]$Staged,[string]$Backup,[string]$Digest,[string]$Result)
 $ErrorActionPreference = 'Stop'
+$outcome = 'failed'
+$failure = $null
 try {
     try { (Get-Process -Id $ParentPid -ErrorAction Stop).WaitForExit(60000) | Out-Null } catch {}
     if ((Get-FileHash -LiteralPath $Staged -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Digest) { throw 'Staging changed.' }
@@ -439,17 +445,30 @@ try {
     $stagedAcl.SetSecurityDescriptorSddlForm(
         $installedAcl.GetSecurityDescriptorSddlForm($access), $access)
     Set-Acl -LiteralPath $Staged -AclObject $stagedAcl
-    if (Test-Path -LiteralPath $Backup) { Remove-Item -LiteralPath $Backup -Force }
+    # Do not discard the previous backup unless the installed client is intact.
+    if (Test-Path -LiteralPath $Backup) {
+        [IO.File]::Delete($Backup)
+    }
     Move-Item -LiteralPath $Original -Destination $Backup -ErrorAction Stop
-    try { Move-Item -LiteralPath $Staged -Destination $Original -ErrorAction Stop }
-    catch { Move-Item -LiteralPath $Backup -Destination $Original -ErrorAction SilentlyContinue; throw }
+    try {
+        Move-Item -LiteralPath $Staged -Destination $Original -ErrorAction Stop
+    } catch {
+        $swapError = $_.Exception.Message
+        try {
+            Move-Item -LiteralPath $Backup -Destination $Original -ErrorAction Stop
+        } catch {
+            throw ('Replacement failed: ' + $swapError + '; rollback failed: ' + $_.Exception.Message)
+        }
+        throw ('Replacement failed; original restored: ' + $swapError)
+    }
     $outcome = 'success'
 } catch {
-    $outcome = 'failed'
+    $failure = $_.Exception.GetType().Name + ': ' + $_.Exception.Message
 }
 try {
     $record = [pscustomobject]@{
         Result = $outcome
+        Error = $failure
         Digest = $Digest
         TimestampUtc = [datetime]::UtcNow.ToString('o')
     }
@@ -457,7 +476,7 @@ try {
     $record | ConvertTo-Json -Compress | Set-Content -LiteralPath $tempResult -Encoding UTF8
     Move-Item -LiteralPath $tempResult -Destination $Result -Force
 } catch {}
-Remove-Item -LiteralPath $Staged -Force -ErrorAction SilentlyContinue
+try { [IO.File]::Delete($Staged) } catch {}
 Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
 if ($outcome -ne 'success') { exit 1 }
 '@
@@ -480,7 +499,7 @@ if ($outcome -ne 'success') { exit 1 }
         Remove-Item -LiteralPath $resultFile -Force -ErrorAction SilentlyContinue
         Start-Process -FilePath $exe -ArgumentList $args -WindowStyle Hidden | Out-Null
     } catch {
-        Remove-Item -LiteralPath $newFile -Force -ErrorAction SilentlyContinue
+        try { [IO.File]::Delete($newFile) } catch {}
         throw
     }
 }
@@ -507,7 +526,10 @@ function Read-UpdateResult {
             Save-ClientState $StatePath $State
             Write-ClientLog $LogPath INFO 'Software update replacement completed.'
         } else {
-            Write-ClientLog $LogPath WARN 'Software update replacement failed.'
+            $reason = if ($record.PSObject.Properties['Error'] -and $record.Error) {
+                ' ' + ([string]$record.Error -replace '[\r\n]+',' ')
+            } else { '' }
+            Write-ClientLog $LogPath WARN ('Software update replacement failed.' + $reason)
         }
     } catch {
         Write-ClientLog $LogPath WARN 'Invalid update result ignored.'
