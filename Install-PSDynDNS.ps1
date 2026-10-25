@@ -155,18 +155,7 @@ function Set-ProtectedAcl {
     }
     if ($ClientRead -or $ClientModify) {
         $sid = New-Object Security.Principal.SecurityIdentifier($script:TaskPrincipalSid)
-        # Executable update files may be deleted but never overwritten by the task.
-        # Non-executable protected files (config and credentials) remain read-only.
-        $filename = [IO.Path]::GetFileName($Path)
-        $isClientFile = (-not $Directory) -and
-            ($filename -in @('PSDynDNS.ps1','PSDynDNS.ps1.new','PSDynDNS.ps1.bak'))
-        $rights = if ($ClientModify) {
-            [Security.AccessControl.FileSystemRights]::Modify
-        } elseif ($isClientFile) {
-            [Security.AccessControl.FileSystemRights]'ReadAndExecute, Delete'
-        } else {
-            [Security.AccessControl.FileSystemRights]::ReadAndExecute
-        }
+        $rights = if ($ClientModify) { [Security.AccessControl.FileSystemRights]::Modify } else { [Security.AccessControl.FileSystemRights]::ReadAndExecute }
         $rule = New-Object Security.AccessControl.FileSystemAccessRule(
             $sid,
             $rights,
@@ -446,14 +435,6 @@ switch ($PSCmdlet.ParameterSetName) {
         $client = Join-Path $script:App 'PSDynDNS.ps1'
         if (-not (Test-Path -LiteralPath $client)) { Install-ClientFile -Source $LocalClientPath -Channel $channel }
         else { Set-ProtectedAcl $client -ClientRead }
-        # Legacy failed updates can leave read-only .new and .bak files.
-        # Repair refreshes only these three update-related ACLs.
-        foreach ($name in @('PSDynDNS.ps1.new','PSDynDNS.ps1.bak')) {
-            $oldUpdate = Join-Path $script:App $name
-            if (Test-Path -LiteralPath $oldUpdate -PathType Leaf) {
-                Set-ProtectedAcl $oldUpdate -ClientRead
-            }
-        }
         Install-Task -Minutes $minutes -Runtime $runtime
         Ensure-Directories
         Protect-InstalledFiles
