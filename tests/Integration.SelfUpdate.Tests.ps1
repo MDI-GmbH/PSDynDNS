@@ -157,6 +157,9 @@ function Move-Item {
     if ($LiteralPath -eq $Staged -and $Destination -eq $Original) {
         throw 'Deliberately injected second move failure'
     }
+    if ($env:PSDYNDNS_CI_FAIL_ROLLBACK -eq '1' -and $LiteralPath -eq $Backup -and $Destination -eq $Original) {
+        throw 'Deliberately injected rollback move failure'
+    }
     Microsoft.PowerShell.Management\Move-Item @PSBoundParameters
 }
 '@
