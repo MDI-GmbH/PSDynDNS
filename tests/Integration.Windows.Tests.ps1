@@ -358,6 +358,25 @@ try {
                 Assert-Equal (Get-FileHash -LiteralPath (Join-Path $script:InstallRoot 'secret.dpapi') -Algorithm SHA256).Hash $secretHash 'Manual update leaves secret unchanged'
                 Assert-True ((Get-ScheduledTask -TaskName $script:TaskName).State -ne 'Disabled') 'Manual update re-enables task'
 
+                # Disabled tasks must remain disabled after an explicit manual update.
+                Disable-ScheduledTask -TaskName $script:TaskName | Out-Null
+                Invoke-Installer -Arguments @('-UpdateClient','-LocalClientPath',$script:Source)
+                Assert-Equal (Get-ScheduledTask -TaskName $script:TaskName).State 'Disabled' 'Manual update retains prior disabled task state'
+                Enable-ScheduledTask -TaskName $script:TaskName | Out-Null
+
+                # An abandoned manual staging file is deliberately not overwritten.
+                $manualStage = $installedClient + '.manual.new'
+                [IO.File]::WriteAllText($manualStage, 'previous interrupted manual update')
+                try {
+                    $blocked = $false
+                    try { Invoke-Installer -Arguments @('-UpdateClient','-LocalClientPath',$candidate) }
+                    catch { $blocked = [string]$_.Exception.Message -match 'staging file exists' }
+                    Assert-True $blocked 'Manual update rejects existing manual staging file'
+                    Assert-Equal ([IO.File]::ReadAllText($manualStage)) 'previous interrupted manual update' 'Manual update retains abandoned staging for inspection'
+                } finally {
+                    [IO.File]::Delete($manualStage)
+                }
+
                 # Restore source bytes, keeping subsequent lifecycle checks
                 # independent of the test marker.
                 Invoke-Installer -Arguments @('-UpdateClient','-LocalClientPath',$script:Source)
@@ -431,6 +450,13 @@ try {
             Assert-True (([string]$task.Actions[0].Arguments -match 'PSDynDNS[.]ps1')) 'Repair restores real client task action'
             Assert-Equal (Read-InstalledSecret) $script:CiSecret 'Repair preserves credentials'
             Assert-Equal ([IO.Path]::GetFileName([string]$task.Actions[0].Execute)) $(if ($Runtime -eq 'PowerShell7') { 'pwsh.exe' } else { 'powershell.exe' }) 'Repair preserves requested PowerShell runtime'
+
+            # Repair a missing client using the local source without changing settings or DPAPI.
+            $repairHash = (Get-FileHash -LiteralPath $installedClient -Algorithm SHA256).Hash
+            [IO.File]::Delete($installedClient)
+            Invoke-Installer -Arguments @('-Repair','-LocalClientPath',$script:Source)
+            Assert-Equal (Get-FileHash -LiteralPath $installedClient -Algorithm SHA256).Hash $repairHash 'Repair reinstalls missing client from local source'
+            Assert-Equal (Read-InstalledSecret) $script:CiSecret 'Repair with missing client preserves secret'
 
             $stateFile = Join-Path $script:InstallRoot 'runtime\state.json'
             '{"BlockedReason":"badauth"}' | Set-Content -LiteralPath $stateFile -Encoding UTF8
