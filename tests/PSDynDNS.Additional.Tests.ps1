@@ -138,7 +138,7 @@ Describe 'Client HTTP, release and logging edge cases' {
         $statePath = Join-Path $root 'state.json'
         $logPath = Join-Path $root 'client.log'
         $cfg = [pscustomobject]@{AutoUpdate=$true;UpdateCheckHours=1;UpdateChannel='main'}
-        $current = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot '..\PSDynDNS.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()
+        $current = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
         $script:mainCandidateHash = $current
         Mock Get-UpdateCandidate {
             [pscustomobject]@{Channel='main';Sha256=$script:mainCandidateHash}
