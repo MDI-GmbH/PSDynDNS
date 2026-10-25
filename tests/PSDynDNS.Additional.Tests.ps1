@@ -38,7 +38,9 @@ Describe 'Client HTTP, release and logging edge cases' {
         Invoke-DynDnsRequest -Config $cfg -Secret 'synthetic+key' -AddressList '8.8.8.8,2606:4700::1111' |
             Should -Be 'good 8.8.8.8'
         $script:requestUri | Should -Match '^https://example[.]org/nic/update[?]source=ci&hostname=host[.]example[.]org&myip='
-        [uri]::UnescapeDataString(([uri]$script:requestUri).Query.Split('myip=')[1]) | Should -Be '8.8.8.8,2606:4700::1111'
+        $myip = [regex]::Match(([uri]$script:requestUri).Query, '(?:[?&])myip=([^&]*)')
+        $myip.Success | Should -BeTrue
+        [uri]::UnescapeDataString($myip.Groups[1].Value) | Should -Be '8.8.8.8,2606:4700::1111'
         [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(
             $script:requestHeaders.Authorization.Substring(6))) | Should -Be 'custom-user:synthetic+key'
         Should -Invoke Invoke-WebRequest -Times 1 -Exactly -ParameterFilter { $MaximumRedirection -eq 0 }
