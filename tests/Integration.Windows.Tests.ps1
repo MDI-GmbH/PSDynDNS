@@ -188,20 +188,21 @@ try {
     $stream.Dispose()
     $canWriteSecret = $true
 } catch {}
-# An old read-only stage cannot be overwritten by LOCAL SERVICE.
-# Verify a fresh uniquely named stage remains writable without touching it.
+# Installer-protected update files grant DELETE but never content write.
 $stale = Join-Path $PSScriptRoot 'CI-Orphan.ps1.new'
 try {
     [IO.File]::WriteAllText($stale, 'stale')
-    Set-Acl -LiteralPath $stale -AclObject (Get-Acl -LiteralPath (Join-Path $PSScriptRoot 'PSDynDNS.ps1'))
-    $fresh = $stale + '.' + [guid]::NewGuid().ToString('N')
-    [IO.File]::WriteAllText($fresh, 'replacement')
-    $canRecoverStaleStage = ([IO.File]::ReadAllText($fresh) -eq 'replacement') -and
-        ([IO.File]::ReadAllText($stale) -eq 'stale')
+    $acl = Get-Acl -LiteralPath $stale
+    $clientAcl = Get-Acl -LiteralPath (Join-Path $PSScriptRoot 'PSDynDNS.ps1')
+    $access = [Security.AccessControl.AccessControlSections]::Access
+    $acl.SetSecurityDescriptorSddlForm($clientAcl.GetSecurityDescriptorSddlForm($access), $access)
+    Set-Acl -LiteralPath $stale -AclObject $acl
+    Remove-Item -LiteralPath $stale -Force -ErrorAction Stop
+    [IO.File]::WriteAllText($stale, 'replacement')
+    $canRecoverStaleStage = ([IO.File]::ReadAllText($stale) -eq 'replacement')
 } catch {
-    Write-Host ('Stale stage retry rejected: ' + $_.Exception.Message)
+    Write-Host ('Stale stage cleanup rejected: ' + $_.Exception.Message)
 } finally {
-    Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
 }
 # Verify the production replacement moves under the actual task identity.
@@ -390,7 +391,7 @@ try {
             Assert-True $probe.CanWriteRuntime 'Task can modify runtime directory'
             Assert-True $probe.CanWriteApp 'Task can modify app directory for updates'
             Assert-True $probe.CanSwapProtectedClient 'LOCAL SERVICE can replace protected script under installed ACLs'
-            Assert-True $probe.CanRecoverStaleStage 'LOCAL SERVICE can stage a fresh update without modifying a protected orphan'
+            Assert-True $probe.CanRecoverStaleStage 'LOCAL SERVICE can delete and recreate an installer-protected staging file'
             Assert-True (-not $probe.CanWriteConfig) 'Task cannot modify configuration'
             Assert-True (-not $probe.CanWriteSecret) 'Task cannot modify secret'
 
