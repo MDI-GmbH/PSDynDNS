@@ -165,6 +165,7 @@ $canWriteApp = $false
 $canWriteConfig = $false
 $canWriteSecret = $false
 $canSwapProtectedClient = $false
+$canRecoverStaleStage = $false
 try {
     $path = Join-Path $runtime 'service-probe.tmp'
     [IO.File]::WriteAllText($path,'ok')
@@ -187,6 +188,19 @@ try {
     $stream.Dispose()
     $canWriteSecret = $true
 } catch {}
+# Reproduce an abandoned staged script with restrictive read-only ACL.
+$stale = Join-Path $PSScriptRoot 'CI-Orphan.ps1.new'
+try {
+    [IO.File]::WriteAllText($stale,'stale')
+    Set-Acl -LiteralPath $stale -AclObject (Get-Acl -LiteralPath (Join-Path $PSScriptRoot 'PSDynDNS.ps1'))
+    Remove-Item -LiteralPath $stale -Force -ErrorAction Stop
+    [IO.File]::WriteAllText($stale,'replacement')
+    $canRecoverStaleStage = ([IO.File]::ReadAllText($stale) -eq 'replacement')
+} catch {
+    Write-Host ('Stale stage cleanup rejected: ' + $_.Exception.Message)
+} finally {
+    Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
+}
 # Verify the production replacement moves under the actual task identity.
 $fixture = Join-Path $PSScriptRoot 'CI-ACL-Original.ps1'
 $stage = $fixture + '.new'
@@ -211,6 +225,7 @@ try {
 }
 $result = [pscustomobject]@{
     CanSwapProtectedClient=$canSwapProtectedClient
+    CanRecoverStaleStage=$canRecoverStaleStage
     CanReadConfigAndDpapi=$canRead
     CanWriteRuntime=$canWriteRuntime
     CanWriteApp=$canWriteApp
@@ -372,6 +387,7 @@ try {
             Assert-True $probe.CanWriteRuntime 'Task can modify runtime directory'
             Assert-True $probe.CanWriteApp 'Task can modify app directory for updates'
             Assert-True $probe.CanSwapProtectedClient 'LOCAL SERVICE can replace protected script under installed ACLs'
+            Assert-True $probe.CanRecoverStaleStage 'LOCAL SERVICE can remove and recreate a read-only abandoned update stage'
             Assert-True (-not $probe.CanWriteConfig) 'Task cannot modify configuration'
             Assert-True (-not $probe.CanWriteSecret) 'Task cannot modify secret'
 
