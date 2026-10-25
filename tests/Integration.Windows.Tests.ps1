@@ -166,6 +166,8 @@ $canWriteConfig = $false
 $canWriteSecret = $false
 $canSwapProtectedClient = $false
 $canRecoverStaleStage = $false
+$staleStageStep = 'not started'
+$staleStageError = ''
 try {
     $path = Join-Path $runtime 'service-probe.tmp'
     [IO.File]::WriteAllText($path,'ok')
@@ -191,17 +193,22 @@ try {
 # Installer-protected update files grant DELETE but never content write.
 $stale = Join-Path $PSScriptRoot 'CI-Orphan.ps1.new'
 try {
+    $staleStageStep = 'create orphan'
     [IO.File]::WriteAllText($stale, 'stale')
+    $staleStageStep = 'apply protected ACL'
     $acl = Get-Acl -LiteralPath $stale
     $clientAcl = Get-Acl -LiteralPath (Join-Path $PSScriptRoot 'PSDynDNS.ps1')
     $access = [Security.AccessControl.AccessControlSections]::Access
     $acl.SetSecurityDescriptorSddlForm($clientAcl.GetSecurityDescriptorSddlForm($access), $access)
     Set-Acl -LiteralPath $stale -AclObject $acl
+    $staleStageStep = 'remove protected orphan'
     Remove-Item -LiteralPath $stale -Force -ErrorAction Stop
+    $staleStageStep = 'create replacement'
     [IO.File]::WriteAllText($stale, 'replacement')
+    $staleStageStep = 'verify replacement'
     $canRecoverStaleStage = ([IO.File]::ReadAllText($stale) -eq 'replacement')
 } catch {
-    Write-Host ('Stale stage cleanup rejected: ' + $_.Exception.Message)
+    $staleStageError = $_.Exception.GetType().FullName + ': ' + $_.Exception.Message
 } finally {
     Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
 }
@@ -230,6 +237,8 @@ try {
 $result = [pscustomobject]@{
     CanSwapProtectedClient=$canSwapProtectedClient
     CanRecoverStaleStage=$canRecoverStaleStage
+    StaleStageStep=$staleStageStep
+    StaleStageError=$staleStageError
     CanReadConfigAndDpapi=$canRead
     CanWriteRuntime=$canWriteRuntime
     CanWriteApp=$canWriteApp
@@ -391,7 +400,7 @@ try {
             Assert-True $probe.CanWriteRuntime 'Task can modify runtime directory'
             Assert-True $probe.CanWriteApp 'Task can modify app directory for updates'
             Assert-True $probe.CanSwapProtectedClient 'LOCAL SERVICE can replace protected script under installed ACLs'
-            Assert-True $probe.CanRecoverStaleStage 'LOCAL SERVICE can delete and recreate an installer-protected staging file'
+            Assert-True $probe.CanRecoverStaleStage ('LOCAL SERVICE can delete and recreate an installer-protected staging file; step=' + $probe.StaleStageStep + '; error=' + $probe.StaleStageError)
             Assert-True (-not $probe.CanWriteConfig) 'Task cannot modify configuration'
             Assert-True (-not $probe.CanWriteSecret) 'Task cannot modify secret'
 
