@@ -410,6 +410,10 @@ try {
             Assert-True $probe.CanSwapProtectedClient 'LOCAL SERVICE can replace protected script under installed ACLs'
             Assert-True $probe.CanRecoverStaleStage 'LOCAL SERVICE can delete and recreate a protected staging file'
             Assert-True $probe.UpdaterCleanedProtectedStage 'LOCAL SERVICE Start-SelfUpdate replaces protected stale stage'
+            $updateResultPath = Join-Path $script:InstallRoot 'runtime\update-result.json'
+            Wait-File -Path $updateResultPath
+            $helperResult = Get-Content -LiteralPath $updateResultPath -Raw | ConvertFrom-Json
+            Assert-Equal $helperResult.Result 'success' 'Protected-stage updater completes the actual file swap'
             Assert-True (-not $probe.CanWriteConfig) 'Task cannot modify configuration'
             Assert-True (-not $probe.CanWriteSecret) 'Task cannot modify secret'
 
