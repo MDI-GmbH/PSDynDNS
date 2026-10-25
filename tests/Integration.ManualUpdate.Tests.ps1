@@ -104,7 +104,7 @@ Describe 'Manual installer update rollback and task recovery' {
         $script:InjectAclError = $true
         $script:InjectRollbackCopyError = $true
         $warnings = @()
-        { & $script:UpdateClientBody -WarningVariable warnings } |
+        { & $script:UpdateClientBody } |
             Should -Throw '*Simulated post-swap ACL failure*'
         $backups = @(Get-ChildItem -LiteralPath $script:App -Filter '*.manual-*.bak')
         $backups.Count | Should -Be 1
