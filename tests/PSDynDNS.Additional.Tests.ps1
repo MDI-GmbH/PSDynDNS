@@ -138,8 +138,10 @@ Describe 'Client HTTP, release and logging edge cases' {
         $statePath = Join-Path $root 'state.json'
         $logPath = Join-Path $root 'client.log'
         $cfg = [pscustomobject]@{AutoUpdate=$true;UpdateCheckHours=1;UpdateChannel='main'}
-        $current = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        $script:mainCandidateHash = $current
+        # Dot-sourced functions and Pester blocks may have different
+        # PSCommandPath values. Control the hash returned to the updater.
+        Mock Get-FileHash { [pscustomobject]@{ Hash=('a' * 64) } }
+        $script:mainCandidateHash = 'a' * 64
         Mock Get-UpdateCandidate {
             [pscustomobject]@{Channel='main';Sha256=$script:mainCandidateHash}
         }
@@ -147,6 +149,7 @@ Describe 'Client HTTP, release and logging edge cases' {
         $state = Read-ClientState $statePath
         Invoke-SoftwareUpdate $cfg $state $statePath $logPath
         Should -Invoke Start-SelfUpdate -Times 0 -Exactly
+        Should -Invoke Get-FileHash -Times 1 -Exactly -ParameterFilter { $Algorithm -eq 'SHA256' }
         $state = Read-ClientState $statePath
         $state.LastSuccessfulUpdateCheckUtc = $null
         $state.LastUpdateAttemptUtc = [datetime]::UtcNow.AddMinutes(-31).ToString('o')
@@ -154,6 +157,7 @@ Describe 'Client HTTP, release and logging edge cases' {
         $script:mainCandidateHash = '0' * 64
         Invoke-SoftwareUpdate $cfg $state $statePath $logPath
         Should -Invoke Start-SelfUpdate -Times 1 -Exactly
+        Should -Invoke Get-FileHash -Times 2 -Exactly -ParameterFilter { $Algorithm -eq 'SHA256' }
     }
 
     It 'respects the successful software-update-check interval' {
@@ -264,17 +268,20 @@ Describe 'Client CLI conflicting parameter validation' {
         } else {
             Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
         }
-        try {
-            $output = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $client -UpgradeChannel beta 2>&1
-            $exit = $LASTEXITCODE
-            $exit | Should -Not -Be 0
-            ([string]($output -join ' ')) | Should -Match 'requires -ForceUpgrade'
-            $output = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $client -ForceUpgrade -ForceDnsUpdate 2>&1
-            $exit = $LASTEXITCODE
-            $exit | Should -Not -Be 0
-            ([string]($output -join ' ')) | Should -Match 'not both'
-        } finally {
-            $global:LASTEXITCODE = 0
+        # Windows PowerShell 5.1 promotes native stderr redirected with 2>&1
+        # to a PowerShell error. Read separate process streams instead.
+        $stdout = Join-Path $TestDrive 'cli-stdout.txt'
+        $stderr = Join-Path $TestDrive 'cli-stderr.txt'
+        foreach ($switches in @(
+            [pscustomobject]@{Args=@('-UpgradeChannel','beta');Error='requires -ForceUpgrade'},
+            [pscustomobject]@{Args=@('-ForceUpgrade','-ForceDnsUpdate');Error='not both'}
+        )) {
+            $arguments = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass',
+                '-File',('"' + $client + '"')) + $switches.Args
+            $process = Start-Process -FilePath $exe -ArgumentList $arguments -Wait -PassThru -NoNewWindow `
+                -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            $process.ExitCode | Should -Not -Be 0
+            (Get-Content -LiteralPath $stderr -Raw) | Should -Match $switches.Error
         }
     }
 }
