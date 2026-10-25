@@ -105,6 +105,57 @@ Describe 'Client HTTP, release and logging edge cases' {
         $release.draft = $true
         { Select-PSDynDnsRelease @($release) beta } | Should -Throw '*No usable*'
     }
+    It 'rejects a release whose asset URL belongs to another tag in both scripts' {
+        $release = [pscustomobject]@{
+            tag_name='v2.1.0';draft=$false;prerelease=$false
+            assets=@([pscustomobject]@{
+                name='PSDynDNS.ps1';digest=('sha256:' + ('a' * 64))
+                browser_download_url='https://github.com/MDI-GmbH/PSDynDNS/releases/download/v2.0.0/PSDynDNS.ps1'
+            })
+        }
+        { Select-PSDynDnsRelease -Releases @($release) -Channel stable } |
+            Should -Throw '*No usable*'
+        $installer = Join-Path $PSScriptRoot '..\Install-PSDynDNS.ps1'
+        $tokens = $null; $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($installer,[ref]$tokens,[ref]$errors)
+        $fn = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Select-PSDynDnsRelease'
+        },$true))
+        $fn.Count | Should -Be 1
+        $installerSelector = [scriptblock]::Create($fn[0].Extent.Text)
+        & {
+            . $installerSelector
+            { Select-PSDynDnsRelease -Releases @($release) -Channel stable } |
+                Should -Throw '*No usable*'
+        }
+    }
+
+    It 'uses SHA256 comparison for main-channel automatic update decisions' {
+        $root = Join-Path $TestDrive 'main-hash-comparison'
+        [IO.Directory]::CreateDirectory($root) | Out-Null
+        $statePath = Join-Path $root 'state.json'
+        $logPath = Join-Path $root 'client.log'
+        $cfg = [pscustomobject]@{AutoUpdate=$true;UpdateCheckHours=1;UpdateChannel='main'}
+        $current = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot '..\PSDynDNS.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()
+        $script:mainCandidateHash = $current
+        Mock Get-UpdateCandidate {
+            [pscustomobject]@{Channel='main';Sha256=$script:mainCandidateHash}
+        }
+        Mock Start-SelfUpdate {}
+        $state = Read-ClientState $statePath
+        Invoke-SoftwareUpdate $cfg $state $statePath $logPath
+        Should -Invoke Start-SelfUpdate -Times 0 -Exactly
+        $state = Read-ClientState $statePath
+        $state.LastSuccessfulUpdateCheckUtc = $null
+        $state.LastUpdateAttemptUtc = [datetime]::UtcNow.AddMinutes(-31).ToString('o')
+        Save-ClientState $statePath $state
+        $script:mainCandidateHash = '0' * 64
+        Invoke-SoftwareUpdate $cfg $state $statePath $logPath
+        Should -Invoke Start-SelfUpdate -Times 1 -Exactly
+    }
+
     It 'respects the successful software-update-check interval' {
         $root = Join-Path $TestDrive 'update-interval'
         [IO.Directory]::CreateDirectory($root) | Out-Null
