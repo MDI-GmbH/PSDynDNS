@@ -532,7 +532,7 @@ Describe 'Asynchronous update helper results' {
         $logLines = @(Get-Content -LiteralPath $script:resultLog)
         $logLines.Count | Should -Be 1
         $logLines[0] | Should -Match 'UnauthorizedAccessException: replacement denied rollback restored original'
-        (Read-ClientState $script:resultState).LastSuccessfulUpdateCheckUtc | Should -Be $previousSuccess
+        (ConvertFrom-UtcTimestamp (Read-ClientState $script:resultState).LastSuccessfulUpdateCheckUtc).Ticks | Should -Be (ConvertFrom-UtcTimestamp $previousSuccess).Ticks
         (Test-Path -LiteralPath $script:resultPath) | Should -BeFalse
     }
     It 'ignores and removes an invalid helper result' {
