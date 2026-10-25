@@ -165,6 +165,24 @@ try {
     Assert-Ci ((Hash-Ci $lockedOriginal) -eq $installedHash) 'Backup deletion failure preserves installed client bytes'
     Assert-Ci ((Hash-Ci $lockedBackup) -eq $previousBackupHash) 'Backup deletion failure preserves prior backup bytes'
 
+    # If the installed script disappears, do not discard the only usable backup.
+    $missingDir = Join-Path $testRoot 'missing-original'
+    [IO.Directory]::CreateDirectory($missingDir) | Out-Null
+    $missingOriginal = Join-Path $missingDir 'PSDynDNS.ps1'
+    $missingStage = $missingOriginal + '.new'
+    $missingBackup = $missingOriginal + '.bak'
+    $missingHelper = Join-Path $missingDir 'swap.ps1'
+    $missingResult = Join-Path $missingDir 'update-result.json'
+    [IO.File]::WriteAllText($missingStage, 'Write-Host "candidate"', $utf8)
+    [IO.File]::WriteAllText($missingBackup, 'Write-Host "previous working version"', $utf8)
+    $missingBackupHash = Hash-Ci $missingBackup
+    [IO.File]::WriteAllText($missingHelper, (Get-RealHelper), $utf8)
+    $missingOutput = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $missingHelper -ParentPid 0 -Original $missingOriginal -Staged $missingStage -Backup $missingBackup -Digest (Hash-Ci $missingStage) -Result $missingResult 2>&1
+    $missingExit = $LASTEXITCODE
+    Assert-Ci ($missingExit -ne 0) 'Missing installed client causes helper failure'
+    Assert-Ci ((Get-Content $missingResult -Raw | ConvertFrom-Json).Result -eq 'failed') 'Missing client writes helper failure'
+    Assert-Ci ((Hash-Ci $missingBackup) -eq $missingBackupHash) 'Missing installed client preserves existing backup'
+
     # Inject a deterministic failure at the SECOND move operation.
     # Place the fault-injection function in the SAME script scope as the
     # extracted production helper. A wrapper script around the helper
