@@ -205,6 +205,22 @@ try {
 } finally {
     try { [IO.File]::Delete($stale) } catch {}
 }
+# Verify that Start-SelfUpdate itself cleans a protected abandoned stage.
+$updaterCleanedProtectedStage = $false
+try {
+    [IO.File]::WriteAllText($stale,'old stage')
+    $stageAcl = Get-Acl -LiteralPath $stale
+    $sourceAcl = Get-Acl -LiteralPath (Join-Path $PSScriptRoot 'PSDynDNS.ps1')
+    $section = [Security.AccessControl.AccessControlSections]::Access
+    $stageAcl.SetSecurityDescriptorSddlForm($sourceAcl.GetSecurityDescriptorSddlForm($section),$section)
+    Set-Acl -LiteralPath $stale -AclObject $stageAcl
+    $payload = [IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'PSDynDNS.ps1'))
+    $digest = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'PSDynDNS.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()
+    Start-SelfUpdate ([pscustomobject]@{Channel='main';Content=$payload;Sha256=$digest})
+    $updaterCleanedProtectedStage = ((Get-FileHash -LiteralPath $stale -Algorithm SHA256).Hash.ToLowerInvariant() -eq $digest)
+} catch {
+    Write-Host ('Updater stage cleanup failed: ' + $_.Exception.Message)
+}
 # Verify the production replacement moves under the actual task identity.
 $fixture = Join-Path $PSScriptRoot 'CI-ACL-Original.ps1'
 $stage = $fixture + '.new'
