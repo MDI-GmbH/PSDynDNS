@@ -149,6 +149,19 @@ Describe 'Shared semantic release selection' {
             Should -Be $expected
         Should -Invoke Invoke-RestMethod -Times 2 -Exactly
         Should -Invoke Invoke-WebRequest -Times 2 -Exactly
+
+        # Valid manifest checksum does not make syntactically invalid PowerShell safe.
+        $script:releaseDownloadBytes = [Text.Encoding]::UTF8.GetBytes('function Unclosed {')
+        $hash = [Security.Cryptography.SHA256]::Create()
+        try {
+            $asset.digest = 'sha256:' + ([BitConverter]::ToString(
+                $hash.ComputeHash($script:releaseDownloadBytes))).Replace('-','').ToLowerInvariant()
+        } finally { $hash.Dispose() }
+        { Install-ClientFile -Channel beta -Destination $destination } |
+            Should -Throw '*syntax errors*'
+        (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() |
+            Should -Be $expected
+        Should -Invoke Invoke-WebRequest -Times 3 -Exactly
     }
     It 'accepts an Invoke-RestMethod-style nested array and retains the full asset digest' {
         $oldDigest = ('a' * 64)
@@ -198,14 +211,20 @@ Describe 'Shared semantic release selection' {
     }
     It 'selects the highest version rather than the first GitHub API result' {
         $digest = 'sha256:' + ('a' * 64)
-        $asset = [pscustomobject]@{
-            name='PSDynDNS.ps1';digest=$digest
-            browser_download_url='https://github.com/MDI-GmbH/PSDynDNS/releases/download/v0.2.0-beta.10/PSDynDNS.ps1'
+        function New-TestRelease {
+            param([string]$Tag,[bool]$Prerelease)
+            [pscustomobject]@{
+                tag_name=$Tag;draft=$false;prerelease=$Prerelease
+                assets=@([pscustomobject]@{
+                    name='PSDynDNS.ps1';digest=$digest
+                    browser_download_url=('https://github.com/MDI-GmbH/PSDynDNS/releases/download/' + $Tag + '/PSDynDNS.ps1')
+                })
+            }
         }
         $releases = @(
-            [pscustomobject]@{tag_name='v0.2.0-beta.2';draft=$false;prerelease=$true;assets=@($asset)}
-            [pscustomobject]@{tag_name='v0.2.0-beta.10';draft=$false;prerelease=$true;assets=@($asset)}
-            [pscustomobject]@{tag_name='v0.1.9';draft=$false;prerelease=$false;assets=@($asset)}
+            (New-TestRelease 'v0.2.0-beta.2' $true)
+            (New-TestRelease 'v0.2.0-beta.10' $true)
+            (New-TestRelease 'v0.1.9' $false)
         )
         (Select-PSDynDnsRelease -Releases $releases -Channel beta).Tag | Should -Be 'v0.2.0-beta.10'
         (Select-PSDynDnsRelease -Releases $releases -Channel stable).Tag | Should -Be 'v0.1.9'

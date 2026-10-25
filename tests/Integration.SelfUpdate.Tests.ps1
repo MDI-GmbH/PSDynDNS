@@ -14,10 +14,21 @@ if ($end -lt 0) { throw 'Client execution footer not found.' }
 $fixture = $source.Substring(0,$end) + @'
 # Only the invocation footer of this temporary test copy is different.
 try {
+    $channel = if ($env:PSDYNDNS_CI_CHANNEL -eq 'beta') { 'beta' } else { 'main' }
+    if ($channel -eq 'beta') {
+        function Invoke-WebRequest {
+            param([string]$Uri,[string]$OutFile,[switch]$UseBasicParsing,[int]$TimeoutSec)
+            [IO.File]::WriteAllBytes($OutFile,[IO.File]::ReadAllBytes($env:PSDYNDNS_CI_PAYLOAD))
+        }
+    }
     $candidate = [pscustomobject]@{
-        Channel='main'
-        Content=[IO.File]::ReadAllBytes($env:PSDYNDNS_CI_PAYLOAD)
+        Channel=$channel
+        Content=$(if ($channel -eq 'main') { [IO.File]::ReadAllBytes($env:PSDYNDNS_CI_PAYLOAD) } else { $null })
+        Url='https://github.com/MDI-GmbH/PSDynDNS/releases/download/v9.0.0-beta.1/PSDynDNS.ps1'
         Sha256=$env:PSDYNDNS_CI_DIGEST
+    }
+    if ($env:PSDYNDNS_CI_FAIL_LAUNCH -eq '1') {
+        function Start-Process { throw 'Simulated helper launch failure' }
     }
     Start-SelfUpdate $candidate
 } catch {
@@ -55,7 +66,7 @@ function Wait-CiHash {
     return $false
 }
 function Invoke-CiUpdate {
-    param([string]$Case,[string]$NewText,[bool]$BadDigest=$false,[bool]$StaleStage=$false,[bool]$OldBackup=$false)
+    param([string]$Case,[string]$NewText,[bool]$BadDigest=$false,[bool]$StaleStage=$false,[bool]$OldBackup=$false,[ValidateSet('main','beta')][string]$Channel='main')
     $dir = Join-Path $testRoot $Case
     [IO.Directory]::CreateDirectory($dir) | Out-Null
     $client = Join-Path $dir 'PSDynDNS.ps1'
@@ -70,6 +81,7 @@ function Invoke-CiUpdate {
     }
     $old = Hash-Ci $client
     $new = Hash-Ci $payload
+    $env:PSDYNDNS_CI_CHANNEL = $Channel
     $env:PSDYNDNS_CI_PAYLOAD = $payload
     $env:PSDYNDNS_CI_DIGEST = if ($BadDigest) { '0000000000000000000000000000000000000000000000000000000000000000' } else { $new }
     try {
@@ -80,7 +92,7 @@ function Invoke-CiUpdate {
         $exitCode = $LASTEXITCODE
         if ($exitCode -ne 0) { $output | ForEach-Object { Write-Host ([string]$_) } }
     } finally {
-        Remove-Item Env:PSDYNDNS_CI_PAYLOAD,Env:PSDYNDNS_CI_DIGEST -ErrorAction SilentlyContinue
+        Remove-Item Env:PSDYNDNS_CI_PAYLOAD,Env:PSDYNDNS_CI_DIGEST,Env:PSDYNDNS_CI_CHANNEL -ErrorAction SilentlyContinue
     }
     return [pscustomobject]@{
         Target=$client;OldHash=$old;NewHash=$new;ExitCode=$exitCode
@@ -110,6 +122,33 @@ try {
     Assert-Ci ($syntax.ExitCode -eq 20) 'Invalid PowerShell syntax rejects update'
     Assert-Ci ((Hash-Ci $syntax.Target) -eq $syntax.OldHash) 'Invalid syntax preserves original'
     Assert-Ci (-not (Test-Path -LiteralPath $syntax.Stage)) 'Invalid syntax cleans staged file'
+
+    # The published beta channel uses Invoke-WebRequest instead of in-memory main bytes.
+    # Run the real updater in a child process, replacing only the HTTP transport.
+    $betaInvalid = Invoke-CiUpdate -Case 'beta-invalid-hash' -Channel beta -NewText 'Write-Host "beta candidate"' -BadDigest $true
+    Assert-Ci ($betaInvalid.ExitCode -eq 20) 'Beta HTTP download with invalid digest is rejected'
+    Assert-Ci ((Hash-Ci $betaInvalid.Target) -eq $betaInvalid.OldHash) 'Rejected beta preserves installed client'
+    Assert-Ci (-not (Test-Path -LiteralPath $betaInvalid.Stage)) 'Rejected beta cleans staging'
+
+    $betaSyntax = Invoke-CiUpdate -Case 'beta-invalid-syntax' -Channel beta -NewText 'function Unclosed {'
+    Assert-Ci ($betaSyntax.ExitCode -eq 20) 'Beta HTTP download with invalid syntax is rejected'
+    Assert-Ci ((Hash-Ci $betaSyntax.Target) -eq $betaSyntax.OldHash) 'Invalid beta syntax preserves installed client'
+
+    $betaValid = Invoke-CiUpdate -Case 'beta-valid' -Channel beta -NewText 'Write-Host "verified beta"'
+    Assert-Ci ($betaValid.ExitCode -eq 0) 'Verified beta HTTP download starts helper'
+    Assert-Ci (Wait-CiHash -File $betaValid.Target -Hash $betaValid.NewHash) 'Beta helper installs downloaded bytes'
+    Assert-Ci (Wait-CiHash -File $betaValid.Backup -Hash $betaValid.OldHash) 'Beta helper saves original client'
+
+    # Launch failure must leave the installed script intact and remove staging.
+    $env:PSDYNDNS_CI_FAIL_LAUNCH = '1'
+    try {
+        $launch = Invoke-CiUpdate -Case 'helper-launch-failure' -NewText 'Write-Host "verified candidate"'
+    } finally {
+        Remove-Item Env:PSDYNDNS_CI_FAIL_LAUNCH -ErrorAction SilentlyContinue
+    }
+    Assert-Ci ($launch.ExitCode -eq 20) 'Helper launch failure propagates to updater'
+    Assert-Ci ((Hash-Ci $launch.Target) -eq $launch.OldHash) 'Launch failure preserves installed client'
+    Assert-Ci (-not (Test-Path -LiteralPath $launch.Stage)) 'Launch failure removes staged file'
 
     $good = Invoke-CiUpdate -Case 'success' -NewText 'Write-Host "updated version"'
     Assert-Ci ($good.ExitCode -eq 0) 'Valid update starts asynchronous replacement'
@@ -164,6 +203,24 @@ try {
     Assert-Ci ([string]$lockedResult.Error -match 'PSDynDNS[.]ps1[.]bak') 'Backup deletion failure identifies the backup'
     Assert-Ci ((Hash-Ci $lockedOriginal) -eq $installedHash) 'Backup deletion failure preserves installed client bytes'
     Assert-Ci ((Hash-Ci $lockedBackup) -eq $previousBackupHash) 'Backup deletion failure preserves prior backup bytes'
+
+    # If the installed script disappears, do not discard the only usable backup.
+    $missingDir = Join-Path $testRoot 'missing-original'
+    [IO.Directory]::CreateDirectory($missingDir) | Out-Null
+    $missingOriginal = Join-Path $missingDir 'PSDynDNS.ps1'
+    $missingStage = $missingOriginal + '.new'
+    $missingBackup = $missingOriginal + '.bak'
+    $missingHelper = Join-Path $missingDir 'swap.ps1'
+    $missingResult = Join-Path $missingDir 'update-result.json'
+    [IO.File]::WriteAllText($missingStage, 'Write-Host "candidate"', $utf8)
+    [IO.File]::WriteAllText($missingBackup, 'Write-Host "previous working version"', $utf8)
+    $missingBackupHash = Hash-Ci $missingBackup
+    [IO.File]::WriteAllText($missingHelper, (Get-RealHelper), $utf8)
+    $missingOutput = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $missingHelper -ParentPid 0 -Original $missingOriginal -Staged $missingStage -Backup $missingBackup -Digest (Hash-Ci $missingStage) -Result $missingResult 2>&1
+    $missingExit = $LASTEXITCODE
+    Assert-Ci ($missingExit -ne 0) 'Missing installed client causes helper failure'
+    Assert-Ci ((Get-Content $missingResult -Raw | ConvertFrom-Json).Result -eq 'failed') 'Missing client writes helper failure'
+    Assert-Ci ((Hash-Ci $missingBackup) -eq $missingBackupHash) 'Missing installed client preserves existing backup'
 
     # Inject a deterministic failure at the SECOND move operation.
     # Place the fault-injection function in the SAME script scope as the
@@ -233,7 +290,7 @@ function Move-Item {
     Write-Host ('SUCCESS: self-update checksum, syntax, replacement and rollback under ' + $Runtime)
 }
 finally {
-    Remove-Item Env:PSDYNDNS_CI_PAYLOAD,Env:PSDYNDNS_CI_DIGEST -ErrorAction SilentlyContinue
+    Remove-Item Env:PSDYNDNS_CI_PAYLOAD,Env:PSDYNDNS_CI_DIGEST,Env:PSDYNDNS_CI_CHANNEL -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
