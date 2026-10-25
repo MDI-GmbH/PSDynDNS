@@ -179,6 +179,9 @@ function Move-Item {
     Assert-Ci ($errorRecord.Result -eq 'failed') 'Failed replacement writes a failure result'
     Assert-Ci ([string]$errorRecord.Error -match 'Replacement failed; original restored') 'Failure result describes swap error and successful rollback'
     Assert-Ci ([string]$errorRecord.Error -match 'Deliberately injected second move failure') 'Failure result preserves the underlying replacement exception'
+    # The helper deletes itself after each run, so recreate it for this separate failure scenario.
+    [IO.File]::WriteAllText($helper, $injectedHelper, $utf8)
+    [IO.File]::Delete((Join-Path $dir 'update-result.json'))
     [IO.File]::WriteAllText($stage, 'Write-Host "retry"', $utf8)
     $env:PSDYNDNS_CI_FAIL_ROLLBACK = '1'
     try {
