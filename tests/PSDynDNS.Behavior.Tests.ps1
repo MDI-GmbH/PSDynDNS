@@ -519,6 +519,22 @@ Describe 'Asynchronous update helper results' {
         (Read-ClientState $script:resultState).LastSuccessfulUpdateCheckUtc | Should -BeNullOrEmpty
         (Test-Path -LiteralPath $script:resultPath) | Should -BeFalse
     }
+    It 'logs multiline helper errors once without recording a successful update' {
+        $state = Read-ClientState $script:resultState
+        $previousSuccess = '2026-10-01T12:00:00.0000000Z'
+        $state.LastSuccessfulUpdateCheckUtc = $previousSuccess
+        Save-ClientState $script:resultState $state
+        [pscustomobject]@{
+            Result='failed'
+            Error="UnauthorizedAccessException: replacement denied`r`nrollback restored original"
+        } | ConvertTo-Json | Set-Content -LiteralPath $script:resultPath -Encoding UTF8
+        Read-UpdateResult $script:resultState $state $script:resultLog
+        $logLines = @(Get-Content -LiteralPath $script:resultLog)
+        $logLines.Count | Should -Be 1
+        $logLines[0] | Should -Match 'UnauthorizedAccessException: replacement denied rollback restored original'
+        (Read-ClientState $script:resultState).LastSuccessfulUpdateCheckUtc | Should -Be $previousSuccess
+        (Test-Path -LiteralPath $script:resultPath) | Should -BeFalse
+    }
     It 'ignores and removes an invalid helper result' {
         $state = Read-ClientState $script:resultState
         '{"Result":"other"}' | Set-Content -LiteralPath $script:resultPath -Encoding UTF8
