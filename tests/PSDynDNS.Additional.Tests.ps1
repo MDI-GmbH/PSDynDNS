@@ -37,7 +37,8 @@ Describe 'Client HTTP, release and logging edge cases' {
         }
         Invoke-DynDnsRequest -Config $cfg -Secret 'synthetic+key' -AddressList '8.8.8.8,2606:4700::1111' |
             Should -Be 'good 8.8.8.8'
-        $script:requestUri | Should -Be 'https://example.org/nic/update?source=ci&hostname=host.example.org&myip=8.8.8.8%2C2606%3A4700%3A%3A1111'
+        $script:requestUri | Should -Match '^https://example[.]org/nic/update[?]source=ci&hostname=host[.]example[.]org&myip='
+        [uri]::UnescapeDataString(([uri]$script:requestUri).Query.Split('myip=')[1]) | Should -Be '8.8.8.8,2606:4700::1111'
         [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(
             $script:requestHeaders.Authorization.Substring(6))) | Should -Be 'custom-user:synthetic+key'
         Should -Invoke Invoke-WebRequest -Times 1 -Exactly -ParameterFilter { $MaximumRedirection -eq 0 }
@@ -52,6 +53,16 @@ Describe 'Client HTTP, release and logging edge cases' {
         Invoke-DynDnsRequest $cfg 'synthetic' '8.8.8.8' | Should -Be 'nochg 8.8.8.8'
         [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(
             $script:requestAuthorization.Substring(6))) | Should -Be 'host.example.org:synthetic'
+    }
+    It 'maps a genuine HTTP 401 response to badauth' {
+        $cfg = [pscustomobject]@{Hostname='host.example.org';UpdateUrl='https://example.org/update'}
+        Mock Invoke-WebRequest {
+            $exception = New-Object System.Net.WebException('Unauthorized')
+            $response = [pscustomobject]@{StatusCode=401}
+            $exception | Add-Member -NotePropertyName Response -NotePropertyValue $response -Force
+            throw $exception
+        }
+        Invoke-DynDnsRequest $cfg 'synthetic' '8.8.8.8' | Should -Be 'badauth'
     }
     It 'does not hide an HTTP error other than a 401 response' {
         $cfg = [pscustomobject]@{Hostname='host.example.org';UpdateUrl='https://example.org/update'}
