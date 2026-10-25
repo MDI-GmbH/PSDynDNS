@@ -27,6 +27,9 @@ try {
         Url='https://github.com/MDI-GmbH/PSDynDNS/releases/download/v9.0.0-beta.1/PSDynDNS.ps1'
         Sha256=$env:PSDYNDNS_CI_DIGEST
     }
+    if ($env:PSDYNDNS_CI_FAIL_LAUNCH -eq '1') {
+        function Start-Process { throw 'Simulated helper launch failure' }
+    }
     Start-SelfUpdate $candidate
 } catch {
     Write-Host ('CI-UPDATE-ERROR: ' + $_.Exception.Message)
@@ -135,6 +138,17 @@ try {
     Assert-Ci ($betaValid.ExitCode -eq 0) 'Verified beta HTTP download starts helper'
     Assert-Ci (Wait-CiHash -File $betaValid.Target -Hash $betaValid.NewHash) 'Beta helper installs downloaded bytes'
     Assert-Ci (Wait-CiHash -File $betaValid.Backup -Hash $betaValid.OldHash) 'Beta helper saves original client'
+
+    # Launch failure must leave the installed script intact and remove staging.
+    $env:PSDYNDNS_CI_FAIL_LAUNCH = '1'
+    try {
+        $launch = Invoke-CiUpdate -Case 'helper-launch-failure' -NewText 'Write-Host "verified candidate"'
+    } finally {
+        Remove-Item Env:PSDYNDNS_CI_FAIL_LAUNCH -ErrorAction SilentlyContinue
+    }
+    Assert-Ci ($launch.ExitCode -eq 20) 'Helper launch failure propagates to updater'
+    Assert-Ci ((Hash-Ci $launch.Target) -eq $launch.OldHash) 'Launch failure preserves installed client'
+    Assert-Ci (-not (Test-Path -LiteralPath $launch.Stage)) 'Launch failure removes staged file'
 
     $good = Invoke-CiUpdate -Case 'success' -NewText 'Write-Host "updated version"'
     Assert-Ci ($good.ExitCode -eq 0) 'Valid update starts asynchronous replacement'
