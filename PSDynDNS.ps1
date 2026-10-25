@@ -406,17 +406,12 @@ function Test-CandidateNewer {
     if ($Candidate.Version -lt $currentCore) { return $false }
     return ($Candidate.Rank -gt $currentRank -or ($Candidate.Rank -eq $currentRank -and $Candidate.PreNumber -gt $currentNumber))
 }
-function Get-SelfUpdatePaths {
-    param([string]$Target)
-    return [pscustomobject]@{ Stage=($Target + '.new'); Backup=($Target + '.bak') }
-}
 function Start-SelfUpdate {
     param($Release)
     $target = $PSCommandPath
     if ([string]::IsNullOrEmpty($target)) { throw 'Self-update requires script execution from a file.' }
-    $paths = Get-SelfUpdatePaths -Target $target
-    $newFile = $paths.Stage
-    $backup = $paths.Backup
+    $newFile = $target + '.new'
+    $backup = $target + '.bak'
     $runtime = Join-Path (Split-Path -Parent (Split-Path -Parent $target)) 'runtime'
     $resultFile = Join-Path $runtime 'update-result.json'
     try {
