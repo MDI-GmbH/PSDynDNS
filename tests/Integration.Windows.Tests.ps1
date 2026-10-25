@@ -204,7 +204,7 @@ try {
     $staleStageStep = 'check DELETE permission'
     $deleteRules = @((Get-Acl -LiteralPath $stale).Access | Where-Object {
         $_.IdentityReference.Value -like 'S-1-5-87-*' -or
-        $_.IdentityReference.Value -like '*\\PSDynDNS'
+        $_.IdentityReference.Value -like '*\PSDynDNS'
     })
     if (-not @($deleteRules | Where-Object { ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Delete) -ne 0 }).Count) {
         throw 'Protected staging file is missing task-specific Delete permission.'
