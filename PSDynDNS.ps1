@@ -406,20 +406,26 @@ function Test-CandidateNewer {
     if ($Candidate.Version -lt $currentCore) { return $false }
     return ($Candidate.Rank -gt $currentRank -or ($Candidate.Rank -eq $currentRank -and $Candidate.PreNumber -gt $currentNumber))
 }
+function Get-SelfUpdatePaths {
+    param([string]$Target)
+    $stage = $Target + '.new'
+    $backup = $Target + '.bak'
+    # Old failed swaps can leave protected files that LOCAL SERVICE cannot delete.
+    # Use fresh names instead of overwriting or removing potentially valuable files.
+    if (Test-Path -LiteralPath $stage) { $stage += '.' + [guid]::NewGuid().ToString('N') }
+    if (Test-Path -LiteralPath $backup) { $backup += '.' + [guid]::NewGuid().ToString('N') }
+    return [pscustomobject]@{Stage=$stage;Backup=$backup}
+}
 function Start-SelfUpdate {
     param($Release)
     $target = $PSCommandPath
     if ([string]::IsNullOrEmpty($target)) { throw 'Self-update requires script execution from a file.' }
-    $newFile = $target + '.new'
-    $backup = $target + '.bak'
+    $paths = Get-SelfUpdatePaths -Target $target
+    $newFile = $paths.Stage
+    $backup = $paths.Backup
     $runtime = Join-Path (Split-Path -Parent (Split-Path -Parent $target)) 'runtime'
     $resultFile = Join-Path $runtime 'update-result.json'
     try {
-        # A failed swap can leave a read-only staged script behind.
-        # Delete that orphan before opening the same path for the next download.
-        if (Test-Path -LiteralPath $newFile -PathType Leaf) {
-            Remove-Item -LiteralPath $newFile -Force -ErrorAction Stop
-        }
         # A new attempt replaces any previous result only after staging has
         # been validated. A missing result is not interpreted as success.
         if ($Release.Channel -eq 'main') { [IO.File]::WriteAllBytes($newFile,$Release.Content) }
@@ -446,13 +452,8 @@ try {
     $stagedAcl.SetSecurityDescriptorSddlForm(
         $installedAcl.GetSecurityDescriptorSddlForm($access), $access)
     Set-Acl -LiteralPath $Staged -AclObject $stagedAcl
-    if (Test-Path -LiteralPath $Backup -PathType Leaf) {
-        # Never remove an old backup unless the currently installed client exists.
-        if (-not (Test-Path -LiteralPath $Original -PathType Leaf)) {
-            throw 'Installed client missing; existing backup preserved.'
-        }
-        Remove-Item -LiteralPath $Backup -Force -ErrorAction Stop
-    }
+    # The backup path is selected to be unused; never delete a previous backup.
+    if (Test-Path -LiteralPath $Backup) { throw 'Backup destination already exists.' }
     Move-Item -LiteralPath $Original -Destination $Backup -ErrorAction Stop
     try {
         Move-Item -LiteralPath $Staged -Destination $Original -ErrorAction Stop
