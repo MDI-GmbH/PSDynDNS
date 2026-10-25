@@ -286,6 +286,7 @@ function Read-ClientState {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         $empty = [pscustomobject]@{}
         foreach ($field in $fields) { Add-Member -InputObject $empty -NotePropertyName $field -NotePropertyValue $null }
+        Save-ClientState $Path $empty
         return $empty
     }
     try { $json = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop }
