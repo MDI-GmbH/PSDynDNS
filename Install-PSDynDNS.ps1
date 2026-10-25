@@ -155,7 +155,419 @@ function Set-ProtectedAcl {
     }
     if ($ClientRead -or $ClientModify) {
         $sid = New-Object Security.Principal.SecurityIdentifier($script:TaskPrincipalSid)
-        $rights = if ($ClientModify) { [Security.AccessControl.FileSystemRights]::Modify } else { [Security.AccessControl.FileSystemRights]::ReadAndExecute }
+        $isExecutable = (-not $Directory) -and
+            ([IO.Path]::GetFileName($Path) -match '^PSDynDNS\.ps1(?:\.(?:new|bak))?
+        $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+            $sid,
+            $rights,
+            $inherit,
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
+        $acl.AddAccessRule($rule)
+        if ($ClientModify -and $Directory -and $Path -eq $script:App) {
+            # Permit replacement of the protected client file without giving
+            # the task write access to config.json, secret.dpapi or file ACLs.
+            $deleteChild = New-Object Security.AccessControl.FileSystemAccessRule(
+                $sid, [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles,
+                [Security.AccessControl.InheritanceFlags]::None,
+                [Security.AccessControl.PropagationFlags]::None,
+                [Security.AccessControl.AccessControlType]::Allow
+            )
+            $acl.AddAccessRule($deleteChild)
+        }
+    }
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+function Get-TaskSid {
+    # Windows Task Scheduler is the authority for task SIDs. /ShowSid
+    # calculates this SID even before registration. Parse only the stable
+    # numeric SID so the localized command output cannot affect the result.
+    $tool = Join-Path $env:SystemRoot 'System32\schtasks.exe'
+    $output = (& $tool /ShowSid /TN $script:TaskName 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) { throw 'Windows could not calculate the scheduled task SID.' }
+    $match = [regex]::Match($output,'S-1-5-87-(?:[0-9]+-){4}[0-9]+')
+    if (-not $match.Success) { throw 'Windows did not return a valid scheduled task SID.' }
+    return $match.Value
+}
+
+function Ensure-Directories {
+    if (-not (Test-Path -LiteralPath $script:Root)) { [void](New-Item -Path $script:Root -ItemType Directory) }
+    if (-not (Test-Path -LiteralPath $script:App)) { [void](New-Item -Path $script:App -ItemType Directory) }
+    $script:TaskPrincipalSid = Get-TaskSid
+    Set-ProtectedAcl $script:Root -ClientRead -Directory
+    Set-ProtectedAcl $script:App -ClientModify -Directory
+    $runtime = Join-Path $script:Root 'runtime'
+    if (-not (Test-Path -LiteralPath $runtime)) { [void](New-Item -Path $runtime -ItemType Directory) }
+    Set-ProtectedAcl $runtime -ClientModify -Directory
+    foreach ($name in @('state.json', 'client.log')) {
+        $target = Join-Path $runtime $name
+        if (-not (Test-Path -LiteralPath $target)) {
+            if ($name -eq 'state.json') { '{}' | Set-Content -LiteralPath $target -Encoding UTF8 }
+            else { [IO.File]::WriteAllText($target, '') }
+        }
+        Set-ProtectedAcl $target -ClientModify
+    }
+}
+function Read-Settings {
+    if (-not (Test-Path -LiteralPath $script:ConfigPath)) { throw 'Configuration not installed.' }
+    return Get-Content -LiteralPath $script:ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+}
+function Save-Settings {
+    param($Cfg)
+    if ($null -eq $Cfg.PSObject.Properties['UpdateChannel']) {
+        Add-Member -InputObject $Cfg -NotePropertyName UpdateChannel -NotePropertyValue 'stable'
+    }
+    if ($null -eq $Cfg.PSObject.Properties['DnsServers']) {
+        Add-Member -InputObject $Cfg -NotePropertyName DnsServers -NotePropertyValue @('8.8.8.8','8.8.4.4')
+    }
+    Assert-PSDynDnsSettings $Cfg
+    # Keep scheduled task repetition interval outside of config.json.
+    if ($null -ne $Cfg.PSObject.Properties['IntervalMinutes']) { $Cfg.PSObject.Properties.Remove('IntervalMinutes') }
+    $temp = $script:ConfigPath + '.new'
+    try {
+        # Restrict the temporary file before writing user configuration.
+        [IO.File]::WriteAllBytes($temp, [byte[]]@())
+        Set-ProtectedAcl $temp -ClientRead
+        $json = $Cfg | ConvertTo-Json -Depth 5
+        [IO.File]::WriteAllText($temp, $json, (New-Object Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $script:ConfigPath) {
+            [IO.File]::Replace($temp, $script:ConfigPath, ($script:ConfigPath + '.bak'))
+        } else {
+            [IO.File]::Move($temp, $script:ConfigPath)
+        }
+        Set-ProtectedAcl $script:ConfigPath -ClientRead
+    } finally {
+        Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Apply-Settings {
+    param($Cfg)
+    foreach ($name in @(
+        'Hostname', 'Username', 'UpdateUrl', 'IPv4Enabled', 'IPv6Enabled',
+        'IPv4CheckUrl', 'IPv6CheckUrl', 'AutoUpdate', 'AllowAutomaticConfigUpdates',
+        'UpdateCheckHours', 'UpdateChannel', 'DnsServers'
+    )) {
+        # Use only explicitly supplied script arguments. An unspecified typed
+        # [string] parameter can otherwise appear as an empty string and
+        # erase defaults such as the DynDNS HTTPS endpoint.
+        if ($script:InstallerBoundParameters.ContainsKey($name)) {
+            $value = $script:InstallerBoundParameters[$name]
+            if ($null -eq $Cfg.PSObject.Properties[$name]) {
+                Add-Member -InputObject $Cfg -NotePropertyName $name -NotePropertyValue $value
+            } else {
+                $Cfg.$name = $value
+            }
+        }
+    }
+    return $Cfg
+}
+function Save-Secret {
+    Add-Type -AssemblyName System.Security
+    $secure = if ($null -ne $CredentialSecret) { $CredentialSecret } else { Read-Host -Prompt 'DynDNS update secret' -AsSecureString }
+    $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+        $bytes = [Text.Encoding]::UTF8.GetBytes($plain)
+        try {
+            $cipher = [Security.Cryptography.ProtectedData]::Protect($bytes,$null,[Security.Cryptography.DataProtectionScope]::LocalMachine)
+            $secretPath = Join-Path $script:Root 'secret.dpapi'
+            $temp = $secretPath + '.new'
+            try {
+                [IO.File]::WriteAllBytes($temp, [byte[]]@())
+                Set-ProtectedAcl $temp -ClientRead
+                [IO.File]::WriteAllBytes($temp, $cipher)
+                if (Test-Path -LiteralPath $secretPath) {
+                    [IO.File]::Replace($temp, $secretPath, ($secretPath + '.bak'))
+                } else {
+                    [IO.File]::Move($temp, $secretPath)
+                }
+                Set-ProtectedAcl $secretPath -ClientRead
+            } finally {
+                Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+            }
+        } finally { [Array]::Clear($bytes,0,$bytes.Length); $plain = $null }
+    } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
+    Set-ProtectedAcl (Join-Path $script:Root 'secret.dpapi') -ClientRead
+}
+function Protect-InstalledFiles {
+    param([switch]$ConfigurationOnly)
+    $names = @('config.json','secret.dpapi')
+    if (-not $ConfigurationOnly) { $names += 'app\PSDynDNS.ps1' }
+    foreach ($name in $names) {
+        $path = Join-Path $script:Root $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Missing $name; cannot protect installation."
+        }
+        Set-ProtectedAcl $path -ClientRead
+    }
+}
+function Install-Task {
+    param([int]$Minutes, [ValidateSet('WindowsPowerShell','PowerShell7')][string]$Runtime='WindowsPowerShell')
+    if ($Minutes -lt 1 -or $Minutes -gt 1440) { throw 'IntervalMinutes must be between 1 and 1440.' }
+    $path = Join-Path $script:App 'PSDynDNS.ps1'
+    $args = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $path + '" -ConfigPath "' + $script:ConfigPath + '"'
+    $exe = if ($Runtime -eq 'PowerShell7') {
+        $command = Get-Command 'pwsh.exe' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $command) { throw 'PowerShell 7 (pwsh.exe) was requested but is not installed.' }
+        $command.Source
+    } else {
+        Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    }
+    $action = New-ScheduledTaskAction -Execute $exe -Argument $args
+    $intervalTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $Minutes)
+    # Delay the first run after boot until networking and DNS services can initialize.
+    $startupTrigger = New-ScheduledTaskTrigger -AtStartup
+    $startupTrigger.Delay = 'PT1M'
+    # Use the well-known LocalService SID so registration works on all Windows UI languages.
+    $principal = New-ScheduledTaskPrincipal -UserId $script:ServiceSid -LogonType ServiceAccount -RunLevel Limited -ProcessTokenSidType Unrestricted
+    $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -StartWhenAvailable
+    Register-ScheduledTask -TaskName $script:TaskName -Action $action -Trigger @($intervalTrigger,$startupTrigger) -Principal $principal -Settings $settings -Force | Out-Null
+}
+function Get-ExistingTaskRuntime {
+    $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
+    if (-not $task) { return 'WindowsPowerShell' }
+    $execute = [string]$task.Actions[0].Execute
+    if ([IO.Path]::GetFileName($execute) -ieq 'pwsh.exe') { return 'PowerShell7' }
+    return 'WindowsPowerShell'
+}
+function Get-ExistingTaskInterval {
+    # The Scheduled Task is the only authoritative source for the interval.
+    $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
+    if (-not $task) { return 10 }
+    foreach ($trigger in @($task.Triggers)) {
+        $raw = [string]$trigger.Repetition.Interval
+        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+        try {
+            $minutes = [int]([Xml.XmlConvert]::ToTimeSpan($raw).TotalMinutes)
+            if ($minutes -ge 1 -and $minutes -le 1440) { return $minutes }
+        } catch { }
+    }
+    return 10
+}
+function Install-ClientFile {
+    param(
+        [string]$Source,
+        [ValidateSet('stable','beta','main')][string]$Channel='stable',
+        [string]$Destination=(Join-Path $script:App 'PSDynDNS.ps1')
+    )
+    if ($Source) {
+        if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) { throw 'Local client file not found.' }
+        $tokens = $null; $errors = $null
+        $null = [Management.Automation.Language.Parser]::ParseFile((Resolve-Path -LiteralPath $Source).Path,[ref]$tokens,[ref]$errors)
+        if ($errors.Count) { throw 'Local client script has syntax errors.' }
+        Copy-Item -LiteralPath $Source -Destination $Destination -Force
+    } else {
+        # Only official release assets are accepted. Development can use -LocalClientPath.
+        if ($Channel -eq 'main') { throw 'Installing main directly requires -LocalClientPath; stable or beta needs a published GitHub Release.' }
+        $url = if ($Channel -eq 'beta') {
+            'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases?per_page=100'
+        } else { 'https://api.github.com/repos/MDI-GmbH/PSDynDNS/releases/latest' }
+        $apiResponse = Invoke-RestMethod -Uri $url -Headers @{'User-Agent'='PSDynDNS-Installer'} -TimeoutSec 20
+        $releases = @($apiResponse)
+        $release = Select-PSDynDnsRelease -Releases $releases -Channel $Channel
+        $expected = $release.Sha256
+        $temp = Join-Path $env:TEMP ('PSDynDNS-' + [guid]::NewGuid().ToString('N') + '.ps1')
+        try {
+            Invoke-WebRequest -Uri $release.Url -OutFile $temp -UseBasicParsing -TimeoutSec 60
+            if ((Get-FileHash -LiteralPath $temp -Algorithm SHA256).Hash -ne $expected) { throw 'Downloaded release failed SHA-256 verification.' }
+            $errors = $null
+            $null = [Management.Automation.Language.Parser]::ParseFile($temp,[ref]$null,[ref]$errors)
+            if ($errors.Count) { throw 'Downloaded PowerShell file contains syntax errors.' }
+            Copy-Item -LiteralPath $temp -Destination $Destination -Force
+        } finally { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+    }
+    Set-ProtectedAcl $Destination -ClientRead
+}
+Assert-Admin
+if (-not $PSVersionTable.PSVersion -or $PSVersionTable.PSVersion -lt [version]'5.1') { throw 'PowerShell 5.1 or 7+ is required.' }
+$script:TaskPrincipalSid = Get-TaskSid
+switch ($PSCmdlet.ParameterSetName) {
+    Install {
+        if (Test-Path -LiteralPath $script:ConfigPath) { throw 'Already installed. Pass setting parameters to reconfigure, or use -Repair.' }
+        if (-not $Hostname) { throw 'Supply -Hostname for installation.' }
+        Ensure-Directories
+        $cfg = [pscustomobject]@{
+            Hostname=$Hostname; Username=$null; UpdateUrl='https://nsupdate.info/nic/update'
+            IPv4Enabled=$true; IPv6Enabled=$false
+            IPv4CheckUrl='https://ipv4.nsupdate.info/myip'
+            IPv6CheckUrl='https://ipv6.nsupdate.info/myip'
+            AutoUpdate=$false; AllowAutomaticConfigUpdates=$true
+            UpdateCheckHours=24; UpdateChannel='stable'; DnsServers=@('8.8.8.8','8.8.4.4')
+        }
+        $cfg = Apply-Settings $cfg
+        Install-ClientFile -Source $LocalClientPath -Channel $cfg.UpdateChannel
+        Save-Settings $cfg
+        Save-Secret
+        $minutes = if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes')) { [int]$IntervalMinutes } else { 10 }
+        $runtime = if ($Runtime) { $Runtime } else { 'WindowsPowerShell' }
+        Install-Task -Minutes $minutes -Runtime $runtime
+        # Reapply permissions using Windows' registered NT TASK SID, not just the pre-registration hash.
+        Ensure-Directories
+        Protect-InstalledFiles
+        Write-Host 'PSDynDNS installed.'
+    }
+    Configure {
+        $settings = @(
+            'Hostname', 'Username', 'UpdateUrl', 'IPv4Enabled', 'IPv6Enabled',
+            'IPv4CheckUrl', 'IPv6CheckUrl', 'AutoUpdate', 'AllowAutomaticConfigUpdates',
+            'UpdateCheckHours', 'UpdateChannel', 'DnsServers', 'IntervalMinutes', 'Runtime'
+        )
+        if (@($settings | Where-Object { $script:InstallerBoundParameters.ContainsKey($_) }).Count -eq 0) {
+            throw 'No settings supplied. Pass the settings to change or use -Help.'
+        }
+        $cfg = Apply-Settings (Read-Settings)
+        Save-Settings $cfg
+        if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes') -or $script:InstallerBoundParameters.ContainsKey('Runtime')) {
+            $minutes = if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes')) { [int]$IntervalMinutes } else { Get-ExistingTaskInterval }
+            $runtime = if ($Runtime) { $Runtime } else { Get-ExistingTaskRuntime }
+            Install-Task -Minutes $minutes -Runtime $runtime
+        }
+        Write-Host 'Configuration saved.'
+    }
+    Repair {
+        $cfg = Read-Settings
+        $channel = if ($cfg.PSObject.Properties['UpdateChannel']) { [string]$cfg.UpdateChannel } else { 'stable' }
+        $minutes = if ($script:InstallerBoundParameters.ContainsKey('IntervalMinutes')) { [int]$IntervalMinutes } else { Get-ExistingTaskInterval }
+        $runtime = if ($Runtime) { $Runtime } else { Get-ExistingTaskRuntime }
+        Ensure-Directories
+        Protect-InstalledFiles -ConfigurationOnly
+        $client = Join-Path $script:App 'PSDynDNS.ps1'
+        if (-not (Test-Path -LiteralPath $client)) { Install-ClientFile -Source $LocalClientPath -Channel $channel }
+        else { Set-ProtectedAcl $client -ClientRead }
+        foreach ($name in @('PSDynDNS.ps1.new', 'PSDynDNS.ps1.bak')) {
+            $oldUpdate = Join-Path $script:App $name
+            if (Test-Path -LiteralPath $oldUpdate -PathType Leaf) {
+                Set-ProtectedAcl $oldUpdate -ClientRead
+            }
+        }
+        Install-Task -Minutes $minutes -Runtime $runtime
+        Ensure-Directories
+        Protect-InstalledFiles
+        Write-Host 'PSDynDNS repaired.'
+    }
+    UpdateClient {
+        # An explicit administrator operation, independent of AutoUpdate.
+        # Only the executable is changed; configuration, secret, state,
+        # task action and schedule are preserved.
+        $cfg = Read-Settings
+        $channel = if ($script:InstallerBoundParameters.ContainsKey('UpdateChannel')) {
+            $UpdateChannel
+        } elseif ($cfg.PSObject.Properties['UpdateChannel']) {
+            [string]$cfg.UpdateChannel
+        } else { 'stable' }
+        if (-not (Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue)) {
+            throw 'Scheduled task missing. Run -Repair before updating.'
+        }
+
+        $client = Join-Path $script:App 'PSDynDNS.ps1'
+        if (-not (Test-Path -LiteralPath $client -PathType Leaf)) {
+            throw 'Installed client missing. Run -Repair first.'
+        }
+        if ($LocalClientPath) {
+            $resolved = (Resolve-Path -LiteralPath $LocalClientPath -ErrorAction Stop).Path
+            if ([string]::Equals($resolved, $client, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'The update source must differ from the installed client file.'
+            }
+        }
+
+        $staged = $client + '.manual.new'
+        if (Test-Path -LiteralPath $staged) {
+            throw 'An earlier manual update staging file exists; inspect it before retrying.'
+        }
+        $backup = $client + '.manual-' +
+            (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' +
+            [guid]::NewGuid().ToString('N') + '.bak'
+        $taskDisabledByUs = $false
+        $replaced = $false
+        try {
+            # Download, SHA-256 verification (release), and syntax validation
+            # happen before the Scheduled Task is touched.
+            Install-ClientFile -Source $LocalClientPath -Channel $channel -Destination $staged
+            $expectedHash = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash
+
+            $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop
+            if ($task.State -ne 'Disabled') {
+                Disable-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop | Out-Null
+                $taskDisabledByUs = $true
+            }
+            if ((Get-ScheduledTask -TaskName $script:TaskName).State -eq 'Running') {
+                Stop-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop
+            }
+            $stopped = $false
+            for ($i = 0; $i -lt 60; $i++) {
+                if ((Get-ScheduledTask -TaskName $script:TaskName).State -ne 'Running') {
+                    $stopped = $true
+                    break
+                }
+                Start-Sleep -Milliseconds 500
+            }
+            if (-not $stopped) { throw 'Scheduled Task did not stop; update aborted.' }
+
+            # Ensure older installations also receive the latest app ACLs.
+            Ensure-Directories
+            [IO.File]::Replace($staged, $client, $backup)
+            $replaced = $true
+            Set-ProtectedAcl $client -ClientRead
+            if ((Get-FileHash -LiteralPath $client -Algorithm SHA256).Hash -ne $expectedHash) {
+                throw 'Installed client hash differs from verified update.'
+            }
+            Write-Host ('PSDynDNS client updated. Previous version: ' + $backup)
+        } catch {
+            if ($replaced) {
+                try {
+                    Copy-Item -LiteralPath $backup -Destination $client -Force -ErrorAction Stop
+                    Set-ProtectedAcl $client -ClientRead
+                } catch {
+                    Write-Warning ('Manual update rollback failed: ' + $_.Exception.Message)
+                }
+            }
+            throw
+        } finally {
+            Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+            if ($taskDisabledByUs) {
+                Enable-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop | Out-Null
+            }
+        }
+    }
+    SetKey {
+        if (-not (Test-Path -LiteralPath $script:ConfigPath)) { throw 'Install first.' }
+        Save-Secret
+        # Re-try with new credentials. Preserve address/check metadata while
+        # clearing only the previous authentication failure.
+        $stateFile = Join-Path (Join-Path $script:Root 'runtime') 'state.json'
+        if (Test-Path -LiteralPath $stateFile -PathType Leaf) {
+            $state = Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($null -ne $state -and $null -ne $state.PSObject.Properties['BlockedReason'] -and
+                [string]$state.BlockedReason -eq 'badauth') {
+                $state.BlockedReason = $null
+                if ($null -ne $state.PSObject.Properties['RetryAfterUtc']) { $state.RetryAfterUtc = $null }
+                $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $stateFile -Encoding UTF8
+                Set-ProtectedAcl $stateFile -ClientModify
+            }
+        }
+        Write-Host 'Secret updated; a previous badauth block, if any, has been cleared.'
+    }
+    ResetState {
+        $state = Join-Path (Join-Path $script:Root 'runtime') 'state.json'
+        if (-not (Test-Path -LiteralPath $script:ConfigPath)) { throw 'PSDynDNS is not installed.' }
+        if (Test-Path -LiteralPath $state) { Remove-Item -LiteralPath $state -Force }
+        '{}' | Set-Content -LiteralPath $state -Encoding UTF8
+        Set-ProtectedAcl $state -ClientModify
+        Write-Host 'DynDNS state cleared; next scheduled run will refresh DNS.'
+    }
+    Uninstall {
+        Unregister-ScheduledTask -TaskName $script:TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $script:App) { Remove-Item -LiteralPath $script:App -Recurse -Force }
+        if ($Purge -and (Test-Path -LiteralPath $script:Root)) { Remove-Item -LiteralPath $script:Root -Recurse -Force }
+        Write-Host 'PSDynDNS uninstalled.'
+    }
+}
+)
+        $rights = if ($ClientModify) { [Security.AccessControl.FileSystemRights]::Modify } elseif ($isExecutable) {
+            [Security.AccessControl.FileSystemRights]'ReadAndExecute, Delete'
+        } else { [Security.AccessControl.FileSystemRights]::ReadAndExecute }
         $rule = New-Object Security.AccessControl.FileSystemAccessRule(
             $sid,
             $rights,
