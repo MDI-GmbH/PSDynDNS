@@ -221,7 +221,8 @@ Describe 'Client HTTP, release and logging edge cases' {
         Invoke-SoftwareUpdate $cfg $state $path (Join-Path $root 'client.log')
         Should -Invoke Get-UpdateCandidate -Times 0 -Exactly
         $state.LastSuccessfulUpdateCheckUtc | Should -Be $previousSuccess
-        (Read-ClientState $path).LastSuccessfulUpdateCheckUtc | Should -Be $previousSuccess
+        ([datetime](Read-ClientState $path).LastSuccessfulUpdateCheckUtc).ToUniversalTime().Ticks |
+            Should -Be ([datetime]$previousSuccess).ToUniversalTime().Ticks
     }
 
     It 'compares alpha, beta, rc and final release ordering at the same version' {
