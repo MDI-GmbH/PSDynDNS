@@ -11,7 +11,7 @@ PSDynDNS is a lightweight DynDNS2 client for Windows Server 2016+ and Windows 10
 
 ## Development
 
-- Develop on `dev` or a feature branch based on `dev`. Never push directly to `main`.
+- Create short-lived feature/fix branches from `main` and merge through pull requests. Never push directly to `main`.
 - Check branch state before editing. Never force-push or rewrite shared history.
 - Change code only when requested. Create PRs when requested; never merge, tag, or publish releases without explicit authorization.
 - Preserve existing behavior and public interfaces unless changes are intentional.
