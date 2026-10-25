@@ -175,6 +175,7 @@ function Move-Item {
     $errorRecord = Get-Content -LiteralPath (Join-Path $dir 'update-result.json') -Raw | ConvertFrom-Json
     Assert-Ci ($errorRecord.Result -eq 'failed') 'Failed replacement writes a failure result'
     Assert-Ci ([string]$errorRecord.Error -match 'Replacement failed; original restored') 'Failure result describes swap error and successful rollback'
+    Assert-Ci ([string]$errorRecord.Error -match 'Deliberately injected second move failure') 'Failure result preserves the underlying replacement exception'
     # The injected rollback failure is expected and already asserted above.
     # GitHub Actions' PowerShell wrappers exit using LASTEXITCODE when it exists,
     # even after every subsequent PowerShell assertion has passed. Clear only
