@@ -71,6 +71,25 @@ Describe 'PSDynDNS installation, task isolation and lifecycle' -Tag 'Integration
             & $script:Installer @params
         }
 
+        function Assert-TaskSchedule {
+            param([int]$ExpectedMinutes,[string]$Phase)
+            $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop
+            $triggers = @($task.Triggers)
+            Assert-Equal $triggers.Count 2 "$Phase has exactly two scheduled task triggers"
+            $interval = @($triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskTimeTrigger' })
+            $startup = @($triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskBootTrigger' })
+            Assert-Equal $interval.Count 1 "$Phase retains the repeating time trigger"
+            Assert-Equal $startup.Count 1 "$Phase registers a system-start trigger"
+            $actualMinutes = [int]([Xml.XmlConvert]::ToTimeSpan([string]$interval[0].Repetition.Interval).TotalMinutes)
+            Assert-Equal $actualMinutes $ExpectedMinutes "$Phase preserves the interval in minutes"
+            # Check the persisted Task Scheduler XML, not just the in-memory CIM object.
+            [xml]$xml = Export-ScheduledTask -TaskName $script:TaskName
+            $boot = $xml.SelectSingleNode('//*[local-name()="BootTrigger"]')
+            Assert-True ($null -ne $boot) "$Phase exports a boot trigger"
+            $delay = $boot.SelectSingleNode('*[local-name()="Delay"]')
+            Assert-True ($null -ne $delay) "$Phase persists a boot delay"
+            Assert-Equal $delay.InnerText 'PT1M' "$Phase delays startup by 60 seconds"
+        }
         function Read-InstalledSecret {
             Add-Type -AssemblyName System.Security
             $secretPath = Join-Path $script:InstallRoot 'secret.dpapi'
@@ -270,6 +289,7 @@ try {
                 (New-Object Security.Principal.NTAccount($principalName)).Translate([Security.Principal.SecurityIdentifier]).Value
             }
             Assert-Equal $principalSid 'S-1-5-19' 'Scheduled task uses language-neutral LOCAL SERVICE SID'
+            Assert-TaskSchedule -ExpectedMinutes 10 -Phase 'Install'
 
             # Explicit manual update of an already installed client. No
             # provider/network calls and no modification of config or DPAPI.
@@ -344,7 +364,7 @@ try {
             Assert-Equal @($config.DnsServers)[0] '1.1.1.1' 'Configure updates DNS server list'
             Assert-True (-not (@($config.PSObject.Properties | ForEach-Object { $_.Name }) -contains 'IntervalMinutes')) 'Task interval is not stored in JSON'
             $task = Get-ScheduledTask -TaskName $script:TaskName
-            Assert-True (([string]$task.Triggers[0].Repetition.Interval -match '15M')) 'Setting parameter updates task repetition interval'
+            Assert-TaskSchedule -ExpectedMinutes 15 -Phase 'Configure'
 
             $probe = Start-LocalServiceProbe
             Assert-Equal $probe.Account 'S-1-5-19' 'Probe actually runs as LOCAL SERVICE'
@@ -355,7 +375,14 @@ try {
             Assert-True (-not $probe.CanWriteConfig) 'Task cannot modify configuration'
             Assert-True (-not $probe.CanWriteSecret) 'Task cannot modify secret'
 
+            # Emulate a missing startup trigger; Repair must recreate both.
+            $existingTask = Get-ScheduledTask -TaskName $script:TaskName
+            $timeOnlyTrigger = @($existingTask.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskTimeTrigger' })
+            Assert-Equal $timeOnlyTrigger.Count 1 'Fixture contains one repeating time trigger'
+            Set-ScheduledTask -TaskName $script:TaskName -Trigger $timeOnlyTrigger[0] | Out-Null
+            Assert-Equal @((Get-ScheduledTask -TaskName $script:TaskName).Triggers).Count 1 'Test fixture removes boot trigger before Repair'
             Invoke-Installer -Arguments @('-Repair')
+            Assert-TaskSchedule -ExpectedMinutes 15 -Phase 'Repair'
             $repairedConfig = Get-Content -LiteralPath (Join-Path $script:InstallRoot 'config.json') -Raw | ConvertFrom-Json
             Assert-Equal $repairedConfig.AllowAutomaticConfigUpdates $false 'Repair retains explicit config update opt-out'
             $task = Get-ScheduledTask -TaskName $script:TaskName

@@ -35,7 +35,7 @@ Download or clone the repository and open **Windows PowerShell 5.1 or PowerShell
 .\Install-PSDynDNS.ps1 -Install -Hostname host.example.org -LocalClientPath .\PSDynDNS.ps1
 ~~~
 
-The installer asks for the DynDNS secret interactively. The scheduler interval is managed by the Windows Scheduled Task, not by the JSON configuration. Never include the secret in a command line or commit it to the repository. The default provider is `https://nsupdate.info/nic/update`; the scheduled interval defaults to 10 minutes.
+The installer asks for the DynDNS secret interactively. The scheduler interval is managed by the Windows Scheduled Task, not by the JSON configuration. The task runs on its normal repeating interval (10 minutes by default) and additionally 60 seconds after each Windows startup; `-Repair` restores both triggers. Never include the secret in a command line or commit it to the repository. The default provider is `https://nsupdate.info/nic/update`.
 
 ### Configuration
 
