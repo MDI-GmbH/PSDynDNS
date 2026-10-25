@@ -60,7 +60,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $pesterConfig = New-PesterConfiguration
-          $pesterConfig.Run.Path = @('./tests/PSDynDNS.Tests.ps1','./tests/PSDynDNS.Behavior.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1','./tests/Integration.Windows.Tests.ps1')
+          $pesterConfig.Run.Path = @('./tests/PSDynDNS.Tests.ps1','./tests/PSDynDNS.Behavior.Tests.ps1','./tests/PSDynDNS.Additional.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1','./tests/Integration.Windows.Tests.ps1')
           $pesterConfig.Run.PassThru = $true
           $pesterConfig.Output.Verbosity = 'Detailed'
           $pesterConfig.CodeCoverage.Enabled = $true
@@ -110,7 +110,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $pesterConfig = New-PesterConfiguration
-          $pesterConfig.Run.Path = @('./tests/PSDynDNS.Tests.ps1','./tests/PSDynDNS.Behavior.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1','./tests/Integration.Windows.Tests.ps1')
+          $pesterConfig.Run.Path = @('./tests/PSDynDNS.Tests.ps1','./tests/PSDynDNS.Behavior.Tests.ps1','./tests/PSDynDNS.Additional.Tests.ps1','./tests/Integration.SelfUpdate.Tests.ps1','./tests/Integration.Windows.Tests.ps1')
           $pesterConfig.Run.PassThru = $true
           $pesterConfig.Output.Verbosity = 'Detailed'
           $pesterConfig.CodeCoverage.Enabled = $true
