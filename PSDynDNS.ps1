@@ -286,13 +286,19 @@ function Read-ClientState {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         $empty = [pscustomobject]@{}
         foreach ($field in $fields) { Add-Member -InputObject $empty -NotePropertyName $field -NotePropertyValue $null }
+        Save-ClientState $Path $empty
         return $empty
     }
     try { $json = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop }
     catch { throw ('Cannot read state.json: ' + $_.Exception.Message) }
     try { $state = ConvertFrom-Json -InputObject $json -ErrorAction Stop }
-    catch { throw ('Invalid JSON in state.json; back up the file before using -ResetState: ' + $_.Exception.Message) }
-    if ($null -eq $state -or $state -isnot [pscustomobject]) { throw 'state.json must contain a JSON object.' }
+    catch { $state = $null }
+    if ($null -eq $state -or $state -isnot [pscustomobject] -or $json.TrimStart() -notmatch '^\{') {
+        $state = [pscustomobject]@{}
+        Write-Warning 'Invalid state.json; resetting cached state.'
+        Write-ClientLog (Join-Path (Split-Path -Parent $Path) 'client.log') WARN 'Invalid state.json; resetting cached state.'
+        Save-ClientState $Path $state
+    }
     foreach ($field in $fields) {
         if ($null -eq $state.PSObject.Properties[$field]) { Add-Member -InputObject $state -NotePropertyName $field -NotePropertyValue $null }
     }
@@ -302,10 +308,9 @@ function Save-ClientState {
     param([string]$Path,$State)
     $target = [IO.Path]::GetFullPath($Path)
     $temporary = $target + '.tmp'
-    $backup = $target + '.bak'
     $State | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $temporary -Encoding UTF8
     if (Test-Path -LiteralPath $target -PathType Leaf) {
-        [IO.File]::Replace($temporary,$target,$backup)
+        [IO.File]::Replace($temporary,$target,[NullString]::Value)
     } else {
         [IO.File]::Move($temporary,$target)
     }
