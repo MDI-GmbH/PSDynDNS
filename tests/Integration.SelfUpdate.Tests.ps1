@@ -131,13 +131,10 @@ try {
     $retry = Invoke-CiUpdate -Case 'stale-stage-and-backup' -NewText 'Write-Host "retry succeeded"' -StaleStage $true -OldBackup $true
     Assert-Ci ($retry.ExitCode -eq 0) 'Retry starts with existing staging and backup'
     Assert-Ci (Wait-CiHash -File $retry.Target -Hash $retry.NewHash) 'Retry replaces client despite stale stage'
-    Assert-Ci ([IO.File]::ReadAllText($retry.Stage) -eq 'orphaned staging') 'Retry preserves the previous staging file'
-    Assert-Ci ([IO.File]::ReadAllText($retry.Backup) -eq 'prior backup') 'Retry preserves the earlier backup'
-    $extraBackups = @(Get-ChildItem -LiteralPath (Split-Path -Parent $retry.Target) -Filter 'PSDynDNS.ps1.bak.*')
-    Assert-Ci ($extraBackups.Count -eq 1) 'Retry creates a uniquely named backup'
-    Assert-Ci ((Hash-Ci $extraBackups[0].FullName) -eq $retry.OldHash) 'New backup contains the previously installed client'
-    $extraStages = @(Get-ChildItem -LiteralPath (Split-Path -Parent $retry.Target) -Filter 'PSDynDNS.ps1.new.*')
-    Assert-Ci ($extraStages.Count -eq 0) 'Retry consumes only its own stage'
+    Assert-Ci (-not (Test-Path -LiteralPath $retry.Stage)) 'Retry consumes the stale stage'
+    Assert-Ci ((Hash-Ci $retry.Backup) -eq $retry.OldHash) 'Retry replaces old backup with the previous installed client'
+    Assert-Ci (@(Get-ChildItem -LiteralPath (Split-Path -Parent $retry.Target) -Filter 'PSDynDNS.ps1.bak*').Count -eq 1) 'Only one automatic backup is retained'
+    Assert-Ci (@(Get-ChildItem -LiteralPath (Split-Path -Parent $retry.Target) -Filter 'PSDynDNS.ps1.new*').Count -eq 0) 'No staging files accumulate'
 
     # Inject a deterministic failure at the SECOND move operation.
     # Place the fault-injection function in the SAME script scope as the
