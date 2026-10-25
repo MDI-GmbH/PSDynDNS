@@ -310,7 +310,7 @@ function Save-ClientState {
     $temporary = $target + '.tmp'
     $State | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $temporary -Encoding UTF8
     if (Test-Path -LiteralPath $target -PathType Leaf) {
-        [IO.File]::Replace($temporary,$target,$null)
+        [IO.File]::Replace($temporary,$target,[NullString]::Value)
     } else {
         [IO.File]::Move($temporary,$target)
     }
