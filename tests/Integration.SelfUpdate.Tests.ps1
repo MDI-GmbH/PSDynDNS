@@ -55,13 +55,19 @@ function Wait-CiHash {
     return $false
 }
 function Invoke-CiUpdate {
-    param([string]$Case,[string]$NewText,[bool]$BadDigest=$false)
+    param([string]$Case,[string]$NewText,[bool]$BadDigest=$false,[bool]$StaleStage=$false,[bool]$OldBackup=$false)
     $dir = Join-Path $testRoot $Case
     [IO.Directory]::CreateDirectory($dir) | Out-Null
     $client = Join-Path $dir 'PSDynDNS.ps1'
     $payload = Join-Path $dir 'payload.txt'
     [IO.File]::WriteAllText($client,$fixture,$utf8)
     [IO.File]::WriteAllText($payload,$NewText,$utf8)
+    if ($StaleStage) {
+        [IO.File]::WriteAllText(($client + '.new'), 'orphaned staging',$utf8)
+    }
+    if ($OldBackup) {
+        [IO.File]::WriteAllText(($client + '.bak'), 'prior backup',$utf8)
+    }
     $old = Hash-Ci $client
     $new = Hash-Ci $payload
     $env:PSDYNDNS_CI_PAYLOAD = $payload
@@ -122,22 +128,11 @@ try {
     Assert-Ci (Wait-CiHash -File $good.Backup -Hash $good.OldHash) 'Helper backs up previous client'
     Assert-Ci (-not (Test-Path -LiteralPath $good.Stage)) 'Helper consumes staged update'
 
-    # Existing backup should not prevent a subsequent valid swap.
-    $successDir = Split-Path -Parent $good.Target
-    $existingOld = Hash-Ci $good.Target
-    $nextText = 'Write-Host "subsequent update"'
-    $nextPayload = Join-Path $successDir 'next-payload.ps1'
-    [IO.File]::WriteAllText($nextPayload,$nextText,$utf8)
-    $env:PSDYNDNS_CI_PAYLOAD = $nextPayload
-    $env:PSDYNDNS_CI_DIGEST = Hash-Ci $nextPayload
-    try {
-        # Start a new update using the original source fixture at a new path.
-        $retry = Invoke-CiUpdate -Case 'second-success' -NewText $nextText
-        Assert-Ci ($retry.ExitCode -eq 0) 'Second update starts successfully'
-        Assert-Ci (Wait-CiHash -File $retry.Target -Hash $retry.NewHash) 'Second update replaces client'
-    } finally {
-        Remove-Item Env:PSDYNDNS_CI_PAYLOAD,Env:PSDYNDNS_CI_DIGEST -ErrorAction SilentlyContinue
-    }
+    $retry = Invoke-CiUpdate -Case 'stale-stage-and-backup' -NewText 'Write-Host "retry succeeded"' -StaleStage $true -OldBackup $true
+    Assert-Ci ($retry.ExitCode -eq 0) 'Retry starts with existing staging and backup'
+    Assert-Ci (Wait-CiHash -File $retry.Target -Hash $retry.NewHash) 'Retry replaces client despite stale stage'
+    Assert-Ci (Wait-CiHash -File $retry.Backup -Hash $retry.OldHash) 'Retry preserves previous installed client as backup'
+    Assert-Ci (-not (Test-Path -LiteralPath $retry.Stage)) 'Retry consumes the stage'
 
     # Inject a deterministic failure at the SECOND move operation.
     # Place the fault-injection function in the SAME script scope as the
