@@ -102,9 +102,11 @@ function Select-PSDynDnsRelease {
         if ($assets.Count -ne 1 -or [string]$assets[0].digest -notmatch '^sha256:([a-fA-F0-9]{64})$') { continue }
         $digest = $Matches[1].ToLowerInvariant()
         $url = [uri]$assets[0].browser_download_url
-        $tagPath = '/MDI-GmbH/PSDynDNS/releases/download/' + $tag + '/'
+        $releasePrefix = '/MDI-GmbH/PSDynDNS/releases/download/'
         if ($url.Scheme -ne 'https' -or $url.Host -ne 'github.com' -or
-            -not $url.AbsolutePath.StartsWith($tagPath, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            -not $url.AbsolutePath.StartsWith($releasePrefix, [StringComparison]::OrdinalIgnoreCase) -or
+            -not $url.AbsolutePath.Substring($releasePrefix.Length).StartsWith(
+                ($tag + '/'), [StringComparison]::Ordinal)) { continue }
         $candidates += [pscustomobject]@{
             Version=$core; Rank=$rank; PreNumber=$number; Tag=$tag
             Url=$url.AbsoluteUri; Sha256=$digest; Content=$null; Commit=$null; Channel=$Channel

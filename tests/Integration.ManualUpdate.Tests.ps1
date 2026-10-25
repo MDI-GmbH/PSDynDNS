@@ -107,9 +107,14 @@ Describe 'Manual installer update rollback and task recovery' {
     It 'reports rollback failure without losing the intact backup' {
         $script:InjectAclError = $true
         $script:InjectRollbackCopyError = $true
-        $warnings = @()
+        Mock Write-Warning {}
         { & $script:UpdateClientBody } |
             Should -Throw '*Simulated post-swap ACL failure*'
+        Should -Invoke Write-Warning -Times 1 -Exactly -ParameterFilter {
+            $Message -like '*Manual update rollback failed: Simulated rollback copy failure*'
+        }
+        (Get-FileHash -LiteralPath $script:ClientPath -Algorithm SHA256).Hash |
+            Should -Be (Get-FileHash -LiteralPath $script:LocalClientPath -Algorithm SHA256).Hash
         $backups = @(Get-ChildItem -LiteralPath $script:App -Filter '*.manual-*.bak')
         $backups.Count | Should -Be 1
         (Get-FileHash -LiteralPath $backups[0].FullName -Algorithm SHA256).Hash |

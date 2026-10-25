@@ -66,10 +66,21 @@ Describe 'Client HTTP, release and logging edge cases' {
         }
         Invoke-DynDnsRequest $cfg 'synthetic' '8.8.8.8' | Should -Be 'badauth'
     }
-    It 'does not hide an HTTP error other than a 401 response' {
+    It 'propagates HTTP 503 rather than treating it as bad credentials' {
         $cfg = [pscustomobject]@{Hostname='host.example.org';UpdateUrl='https://example.org/update'}
-        Mock Invoke-WebRequest { throw 'Simulated HTTP 503' }
-        { Invoke-DynDnsRequest $cfg 'synthetic' '8.8.8.8' } | Should -Throw '*503*'
+        Mock Invoke-WebRequest {
+            $exception = New-Object System.Net.WebException('Simulated HTTP 503')
+            $exception | Add-Member -NotePropertyName Response -NotePropertyValue (
+                [pscustomobject]@{StatusCode=503}) -Force
+            throw $exception
+        }
+        { Invoke-DynDnsRequest $cfg 'synthetic' '8.8.8.8' } | Should -Throw '*Simulated HTTP 503*'
+    }
+    It 'propagates a network exception without an HTTP response' {
+        $cfg = [pscustomobject]@{Hostname='host.example.org';UpdateUrl='https://example.org/update'}
+        Mock Invoke-WebRequest { throw 'Simulated connection failure' }
+        { Invoke-DynDnsRequest $cfg 'synthetic' '8.8.8.8' } |
+            Should -Throw '*Simulated connection failure*'
     }
     It 'rotates the log after one MiB without dropping the new line' {
         $path = Join-Path $TestDrive 'rotate-client.log'
@@ -105,7 +116,7 @@ Describe 'Client HTTP, release and logging edge cases' {
         $release.draft = $true
         { Select-PSDynDnsRelease @($release) beta } | Should -Throw '*No usable*'
     }
-    It 'rejects a release whose asset URL belongs to another tag in both scripts' {
+    It 'requires the exact case of the release tag while accepting repository casing' {
         $release = [pscustomobject]@{
             tag_name='v2.1.0';draft=$false;prerelease=$false
             assets=@([pscustomobject]@{
@@ -113,8 +124,19 @@ Describe 'Client HTTP, release and logging edge cases' {
                 browser_download_url='https://github.com/MDI-GmbH/PSDynDNS/releases/download/v2.0.0/PSDynDNS.ps1'
             })
         }
+        $wrongTagUrl = 'https://github.com/MDI-GmbH/PSDynDNS/releases/download/V2.1.0/PSDynDNS.ps1'
+        $matchingUrl = 'https://github.com/mdi-gmbh/psdyndns/releases/download/v2.1.0/PSDynDNS.ps1'
+        # Client selector, including the existing different-version rejection.
         { Select-PSDynDnsRelease -Releases @($release) -Channel stable } |
             Should -Throw '*No usable*'
+        $release.assets[0].browser_download_url = $wrongTagUrl
+        { Select-PSDynDnsRelease -Releases @($release) -Channel stable } |
+            Should -Throw '*No usable*'
+        $release.assets[0].browser_download_url = $matchingUrl
+        (Select-PSDynDnsRelease -Releases @($release) -Channel stable).Tag |
+            Should -Be 'v2.1.0'
+
+        # Installer selector must enforce the same contract.
         $installer = Join-Path $PSScriptRoot '..\Install-PSDynDNS.ps1'
         $tokens = $null; $errors = $null
         $ast = [Management.Automation.Language.Parser]::ParseFile($installer,[ref]$tokens,[ref]$errors)
@@ -127,8 +149,12 @@ Describe 'Client HTTP, release and logging edge cases' {
         $installerSelector = [scriptblock]::Create($fn[0].Extent.Text)
         & {
             . $installerSelector
+            $release.assets[0].browser_download_url = $wrongTagUrl
             { Select-PSDynDnsRelease -Releases @($release) -Channel stable } |
                 Should -Throw '*No usable*'
+            $release.assets[0].browser_download_url = $matchingUrl
+            (Select-PSDynDnsRelease -Releases @($release) -Channel stable).Tag |
+                Should -Be 'v2.1.0'
         }
     }
 
@@ -185,13 +211,17 @@ Describe 'Client HTTP, release and logging edge cases' {
         [IO.Directory]::CreateDirectory($root) | Out-Null
         $path = Join-Path $root 'state.json'
         $state = Read-ClientState $path
+        # Expired successful-check interval means only the recent attempt can throttle.
+        $previousSuccess = [datetime]::UtcNow.AddHours(-25).ToString('o')
+        $state.LastSuccessfulUpdateCheckUtc = $previousSuccess
         $state.LastUpdateAttemptUtc = [datetime]::UtcNow.ToString('o')
         Save-ClientState $path $state
         $cfg = [pscustomobject]@{AutoUpdate=$true;UpdateCheckHours=24;UpdateChannel='beta'}
         Mock Get-UpdateCandidate { throw 'GitHub must not be queried during retry window' }
         Invoke-SoftwareUpdate $cfg $state $path (Join-Path $root 'client.log')
         Should -Invoke Get-UpdateCandidate -Times 0 -Exactly
-        (Read-ClientState $path).LastSuccessfulUpdateCheckUtc | Should -BeNullOrEmpty
+        $state.LastSuccessfulUpdateCheckUtc | Should -Be $previousSuccess
+        (Read-ClientState $path).LastSuccessfulUpdateCheckUtc | Should -Be $previousSuccess
     }
 
     It 'compares alpha, beta, rc and final release ordering at the same version' {
