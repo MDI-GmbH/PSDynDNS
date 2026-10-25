@@ -24,9 +24,21 @@ Describe 'State, HTTP and configuration regression tests' {
     }
     It 'creates a missing state without a backup' {
         $file = Join-Path $TestDrive 'state-new.json'
-        Save-ClientState $file (Read-ClientState $file)
+        $state = Read-ClientState $file
+        $state.LastIPv4 | Should -BeNullOrEmpty
         (Test-Path -LiteralPath $file) | Should -BeTrue
         (Test-Path -LiteralPath ($file + '.bak')) | Should -BeFalse
+    }
+    It 'recovers zero-byte and whitespace-only state files' {
+        foreach ($value in @('', '   ')) {
+            $file = Join-Path $TestDrive ('empty-' + [guid]::NewGuid().ToString('N') + '.json')
+            [IO.File]::WriteAllText($file, $value)
+            $state = Read-ClientState $file -WarningAction SilentlyContinue
+            $state.LastIPv4 | Should -BeNullOrEmpty
+            (Get-Content -LiteralPath $file -Raw | ConvertFrom-Json) | Should -BeOfType [pscustomobject]
+            (Test-Path -LiteralPath ($file + '.bak')) | Should -BeFalse
+        }
+        (Get-Content -LiteralPath (Join-Path $TestDrive 'client.log') -Raw) | Should -Match 'Invalid state.json'
     }
     It 'uses the common validator for FQDNs, DNS resolvers and enabled IP families' {
         $cfg = [pscustomobject]@{
