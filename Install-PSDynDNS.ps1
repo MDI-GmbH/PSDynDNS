@@ -156,7 +156,14 @@ function Set-ProtectedAcl {
     if ($ClientRead -or $ClientModify) {
         $sid = New-Object Security.Principal.SecurityIdentifier($script:TaskPrincipalSid)
         $isExecutable = (-not $Directory) -and
-            ([IO.Path]::GetFileName($Path) -match '^PSDynDNS\.ps1(?:\.(?:new|bak))?
+            ([IO.Path]::GetFileName($Path) -match '^PSDynDNS\.ps1(?:\.(?:new|bak))?$')
+        $rights = if ($ClientModify) {
+            [Security.AccessControl.FileSystemRights]::Modify
+        } elseif ($isExecutable) {
+            [Security.AccessControl.FileSystemRights]'ReadAndExecute, Delete'
+        } else {
+            [Security.AccessControl.FileSystemRights]::ReadAndExecute
+        }
         $rule = New-Object Security.AccessControl.FileSystemAccessRule(
             $sid,
             $rights,
