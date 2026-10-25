@@ -10,14 +10,23 @@ Describe 'State, HTTP and configuration regression tests' {
         $state.BlockedReason | Should -BeNullOrEmpty
         $state.LastSuccessfulUpdateCheckUtc | Should -BeNullOrEmpty
     }
-    It 'atomically replaces an existing state with an explicit backup' {
+    It 'atomically replaces state without a backup' {
         $file = Join-Path $TestDrive 'state-replace.json'
         [IO.File]::WriteAllText($file,'{}')
         $state = Read-ClientState $file
         $state.LastIPv4 = '8.8.8.8'
-        { Save-ClientState $file $state } | Should -Not -Throw
-        (Read-ClientState $file).LastIPv4 | Should -Be '8.8.8.8'
-        (Test-Path -LiteralPath ($file + '.bak')) | Should -BeTrue
+        Save-ClientState $file $state
+        $state.LastIPv4 = '9.9.9.9'
+        Save-ClientState $file $state
+        (Read-ClientState $file).LastIPv4 | Should -Be '9.9.9.9'
+        (Test-Path -LiteralPath ($file + '.bak')) | Should -BeFalse
+        (Test-Path -LiteralPath ($file + '.tmp')) | Should -BeFalse
+    }
+    It 'creates a missing state without a backup' {
+        $file = Join-Path $TestDrive 'state-new.json'
+        Save-ClientState $file (Read-ClientState $file)
+        (Test-Path -LiteralPath $file) | Should -BeTrue
+        (Test-Path -LiteralPath ($file + '.bak')) | Should -BeFalse
     }
     It 'uses the common validator for FQDNs, DNS resolvers and enabled IP families' {
         $cfg = [pscustomobject]@{
@@ -694,9 +703,15 @@ Describe 'Config, DPAPI and local state fault handling' {
         [IO.File]::WriteAllBytes($secretFile,[byte[]](4,9,1,5,4))
         { Read-MachineSecret $secretFile } | Should -Throw
     }
-    It 'rejects non-object JSON as runtime state' {
-        $stateFile = Join-Path $TestDrive 'scalar.json'
-        'null' | Set-Content -LiteralPath $stateFile
-        { Read-ClientState $stateFile } | Should -Throw '*JSON object*'
+    It 'resets non-object JSON and logs a warning' {
+        foreach ($value in @('null','[]','123','"string"')) {
+            $stateFile = Join-Path $TestDrive ('scalar-' + [guid]::NewGuid().ToString('N') + '.json')
+            $value | Set-Content -LiteralPath $stateFile
+            $state = Read-ClientState $stateFile -WarningAction SilentlyContinue
+            $state.BlockedReason | Should -BeNullOrEmpty
+            (Get-Content $stateFile -Raw | ConvertFrom-Json) | Should -BeOfType [pscustomobject]
+            (Test-Path -LiteralPath ($stateFile + '.bak')) | Should -BeFalse
+        }
+        (Get-Content (Join-Path $TestDrive 'client.log') -Raw) | Should -Match 'Invalid state.json'
     }
 }
