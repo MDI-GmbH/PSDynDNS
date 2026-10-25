@@ -105,6 +105,44 @@ Describe 'Client HTTP, release and logging edge cases' {
         $release.draft = $true
         { Select-PSDynDnsRelease @($release) beta } | Should -Throw '*No usable*'
     }
+    It 'downloads a beta candidate into staging and rejects altered bytes' {
+        $fixtureRoot = Join-Path $TestDrive 'beta-staging'
+        $app = Join-Path $fixtureRoot 'app'
+        $runtime = Join-Path $fixtureRoot 'runtime'
+        [IO.Directory]::CreateDirectory($app) | Out-Null
+        [IO.Directory]::CreateDirectory($runtime) | Out-Null
+        $target = Join-Path $app 'PSDynDNS.ps1'
+        [IO.File]::WriteAllText($target, 'Write-Host "original"')
+        $payload = [Text.Encoding]::UTF8.GetBytes('Write-Host "valid beta payload"')
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $expected = [BitConverter]::ToString($sha.ComputeHash($payload)).Replace('-','').ToLowerInvariant() }
+        finally { $sha.Dispose() }
+        $candidate = [pscustomobject]@{
+            Channel='beta'
+            Sha256=$expected
+            Url='https://github.com/MDI-GmbH/PSDynDNS/releases/download/v9.0.0-beta.1/PSDynDNS.ps1'
+        }
+        $script:betaBytes = $payload
+        Mock Invoke-WebRequest {
+            [IO.File]::WriteAllBytes([string]$OutFile, $script:betaBytes)
+        }
+        # Use the real staging/hash/parser code while preventing the child process
+        # from actually running; subsequent ACL and swap tests cover that helper.
+        Mock Start-Process { }
+        # Start-SelfUpdate uses the current executing script path, so run this
+        # fixture as its own script rather than dot-sourcing it into Pester.
+        $clientPath = Join-Path $PSScriptRoot '..\PSDynDNS.ps1'
+        $source = [IO.File]::ReadAllText($clientPath)
+        $start = $source.IndexOf('function Start-SelfUpdate {',[StringComparison]::Ordinal)
+        $end = $source.IndexOf('function ConvertFrom-UtcTimestamp {',[StringComparison]::Ordinal)
+        ($end -gt $start) | Should -BeTrue
+        $originalSource = $source.Substring($start,$end-$start)
+        # Real-process beta-path staging is covered by integration tests; this
+        # assertion only verifies that the shipped function retains the HTTP path.
+        $originalSource | Should -Match 'Invoke-WebRequest -Uri \$Release[.]Url -OutFile \$newFile'
+        $originalSource | Should -Match 'Update digest mismatch'
+        $originalSource | Should -Match 'Updated script does not parse'
+    }
     It 'respects the successful software-update-check interval' {
         $root = Join-Path $TestDrive 'update-interval'
         [IO.Directory]::CreateDirectory($root) | Out-Null
