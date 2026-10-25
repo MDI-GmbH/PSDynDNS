@@ -166,8 +166,6 @@ $canWriteConfig = $false
 $canWriteSecret = $false
 $canSwapProtectedClient = $false
 $canRecoverStaleStage = $false
-$staleStageStep = 'not started'
-$staleStageError = ''
 try {
     $path = Join-Path $runtime 'service-probe.tmp'
     [IO.File]::WriteAllText($path,'ok')
@@ -190,35 +188,22 @@ try {
     $stream.Dispose()
     $canWriteSecret = $true
 } catch {}
-# Installer-protected update files grant DELETE but never content write.
+# The app directory grants DELETE_CHILD even when the staged file is read-only.
 $stale = Join-Path $PSScriptRoot 'PSDynDNS.ps1.new'
 try {
-    $staleStageStep = 'create orphan'
     [IO.File]::WriteAllText($stale, 'stale')
-    $staleStageStep = 'apply protected ACL'
     $acl = Get-Acl -LiteralPath $stale
     $clientAcl = Get-Acl -LiteralPath (Join-Path $PSScriptRoot 'PSDynDNS.ps1')
     $access = [Security.AccessControl.AccessControlSections]::Access
     $acl.SetSecurityDescriptorSddlForm($clientAcl.GetSecurityDescriptorSddlForm($access), $access)
     Set-Acl -LiteralPath $stale -AclObject $acl
-    $staleStageStep = 'check DELETE permission'
-    $deleteRules = @((Get-Acl -LiteralPath $stale).Access | Where-Object {
-        $_.IdentityReference.Value -like 'S-1-5-87-*' -or
-        $_.IdentityReference.Value -like '*\PSDynDNS'
-    })
-    if (-not @($deleteRules | Where-Object { ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Delete) -ne 0 }).Count) {
-        throw 'Protected staging file is missing task-specific Delete permission.'
-    }
-    $staleStageStep = 'remove protected orphan'
     [IO.File]::Delete($stale)
-    $staleStageStep = 'create replacement'
     [IO.File]::WriteAllText($stale, 'replacement')
-    $staleStageStep = 'verify replacement'
     $canRecoverStaleStage = ([IO.File]::ReadAllText($stale) -eq 'replacement')
 } catch {
-    $staleStageError = $_.Exception.GetType().FullName + ': ' + $_.Exception.Message
+    Write-Host ('Protected stage cleanup failed: ' + $_.Exception.Message)
 } finally {
-    Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
+    try { [IO.File]::Delete($stale) } catch {}
 }
 # Verify the production replacement moves under the actual task identity.
 $fixture = Join-Path $PSScriptRoot 'CI-ACL-Original.ps1'
@@ -245,8 +230,6 @@ try {
 $result = [pscustomobject]@{
     CanSwapProtectedClient=$canSwapProtectedClient
     CanRecoverStaleStage=$canRecoverStaleStage
-    StaleStageStep=$staleStageStep
-    StaleStageError=$staleStageError
     CanReadConfigAndDpapi=$canRead
     CanWriteRuntime=$canWriteRuntime
     CanWriteApp=$canWriteApp
@@ -408,7 +391,7 @@ try {
             Assert-True $probe.CanWriteRuntime 'Task can modify runtime directory'
             Assert-True $probe.CanWriteApp 'Task can modify app directory for updates'
             Assert-True $probe.CanSwapProtectedClient 'LOCAL SERVICE can replace protected script under installed ACLs'
-            Assert-True $probe.CanRecoverStaleStage ('LOCAL SERVICE can delete and recreate an installer-protected staging file; step=' + $probe.StaleStageStep + '; error=' + $probe.StaleStageError)
+            Assert-True $probe.CanRecoverStaleStage 'LOCAL SERVICE can delete and recreate a protected staging file'
             Assert-True (-not $probe.CanWriteConfig) 'Task cannot modify configuration'
             Assert-True (-not $probe.CanWriteSecret) 'Task cannot modify secret'
 
