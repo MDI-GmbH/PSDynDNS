@@ -36,6 +36,7 @@ BeforeAll {
     function Get-ScheduledTask {
         [CmdletBinding()]
         param([string]$TaskName)
+        if (-not $script:TaskExists) { return $null }
         return [pscustomobject]@{ State=$script:FakeTaskState }
     }
     function Disable-ScheduledTask {
@@ -52,6 +53,7 @@ BeforeAll {
         [CmdletBinding()]
         param([string]$TaskName)
         $script:StopCalls++
+        if ($script:StopFailure) { throw 'Simulated task stop failure' }
         $script:FakeTaskState = 'Disabled'
     }
     function Copy-Item {
@@ -84,6 +86,8 @@ Describe 'Manual installer update rollback and task recovery' {
         $script:InjectRollbackCopyError = $false
         $script:AclOperations = 0
         $script:StopCalls = 0
+        $script:TaskExists = $true
+        $script:StopFailure = $false
     }
 
     It 'restores original client bytes after failure immediately following replacement' {
@@ -111,6 +115,40 @@ Describe 'Manual installer update rollback and task recovery' {
         (Get-FileHash -LiteralPath $backups[0].FullName -Algorithm SHA256).Hash |
             Should -Be $script:OriginalHash
         $script:FakeTaskState | Should -Be 'Ready'
+        (Test-Path -LiteralPath ($script:ClientPath + '.manual.new')) | Should -BeFalse
+    }
+
+    It 'rejects updating without a registered task before staging' {
+        $script:TaskExists = $false
+        { & $script:UpdateClientBody } | Should -Throw '*Scheduled task missing*'
+        (Get-FileHash -LiteralPath $script:ClientPath -Algorithm SHA256).Hash |
+            Should -Be $script:OriginalHash
+        (Test-Path -LiteralPath ($script:ClientPath + '.manual.new')) | Should -BeFalse
+    }
+
+    It 'rejects updating a missing installed client without creating a staging file' {
+        [IO.File]::Delete($script:ClientPath)
+        { & $script:UpdateClientBody } | Should -Throw '*Installed client missing*'
+        (Test-Path -LiteralPath ($script:ClientPath + '.manual.new')) | Should -BeFalse
+        $script:FakeTaskState | Should -Be 'Ready'
+    }
+
+    It 'rejects using the installed script itself as the update source' {
+        $script:LocalClientPath = $script:ClientPath
+        { & $script:UpdateClientBody } | Should -Throw '*source must differ*'
+        (Get-FileHash -LiteralPath $script:ClientPath -Algorithm SHA256).Hash |
+            Should -Be $script:OriginalHash
+        (Test-Path -LiteralPath ($script:ClientPath + '.manual.new')) | Should -BeFalse
+    }
+
+    It 'restores the task when stopping a running task fails' {
+        $script:FakeTaskState = 'Running'
+        $script:StopFailure = $true
+        { & $script:UpdateClientBody } | Should -Throw '*Simulated task stop failure*'
+        $script:StopCalls | Should -Be 1
+        $script:FakeTaskState | Should -Be 'Ready'
+        (Get-FileHash -LiteralPath $script:ClientPath -Algorithm SHA256).Hash |
+            Should -Be $script:OriginalHash
         (Test-Path -LiteralPath ($script:ClientPath + '.manual.new')) | Should -BeFalse
     }
 
