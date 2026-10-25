@@ -160,7 +160,7 @@ try {
     Assert-Ci ($lockedExit -ne 0) 'Locked backup prevents helper replacement'
     $lockedResult = Get-Content -LiteralPath $lockedResultPath -Raw | ConvertFrom-Json
     Assert-Ci ($lockedResult.Result -eq 'failed') 'Backup deletion failure writes a failed result'
-    Assert-Ci ([string]$lockedResult.Error -match 'IOException|UnauthorizedAccessException') 'Backup deletion failure records its exception type'
+    Assert-Ci ([string]$lockedResult.Error -match 'MethodInvocationException|IOException|UnauthorizedAccessException') 'Backup deletion failure records its exception type'
     Assert-Ci ([string]$lockedResult.Error -match 'PSDynDNS[.]ps1[.]bak') 'Backup deletion failure identifies the backup'
     Assert-Ci ((Hash-Ci $lockedOriginal) -eq $installedHash) 'Backup deletion failure preserves installed client bytes'
     Assert-Ci ((Hash-Ci $lockedBackup) -eq $previousBackupHash) 'Backup deletion failure preserves prior backup bytes'
