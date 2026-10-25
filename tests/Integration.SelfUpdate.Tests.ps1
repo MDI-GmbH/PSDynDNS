@@ -136,6 +136,35 @@ try {
     Assert-Ci (@(Get-ChildItem -LiteralPath (Split-Path -Parent $retry.Target) -Filter 'PSDynDNS.ps1.bak*').Count -eq 1) 'Only one automatic backup is retained'
     Assert-Ci (@(Get-ChildItem -LiteralPath (Split-Path -Parent $retry.Target) -Filter 'PSDynDNS.ps1.new*').Count -eq 0) 'No staging files accumulate'
 
+    # A backup in use must not be deleted or cause the installed client to move.
+    $lockedDir = Join-Path $testRoot 'locked-backup'
+    [IO.Directory]::CreateDirectory($lockedDir) | Out-Null
+    $lockedOriginal = Join-Path $lockedDir 'PSDynDNS.ps1'
+    $lockedStage = $lockedOriginal + '.new'
+    $lockedBackup = $lockedOriginal + '.bak'
+    $lockedHelper = Join-Path $lockedDir 'swap.ps1'
+    $lockedResultPath = Join-Path $lockedDir 'update-result.json'
+    [IO.File]::WriteAllText($lockedOriginal, 'Write-Host "installed"', $utf8)
+    [IO.File]::WriteAllText($lockedStage, 'Write-Host "candidate"', $utf8)
+    [IO.File]::WriteAllText($lockedBackup, 'Write-Host "previous backup"', $utf8)
+    [IO.File]::WriteAllText($lockedHelper, (Get-RealHelper), $utf8)
+    $installedHash = Hash-Ci $lockedOriginal
+    $previousBackupHash = Hash-Ci $lockedBackup
+    $lockedStream = [IO.File]::Open($lockedBackup, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $lockedOutput = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $lockedHelper -ParentPid 0 -Original $lockedOriginal -Staged $lockedStage -Backup $lockedBackup -Digest (Hash-Ci $lockedStage) -Result $lockedResultPath 2>&1
+        $lockedExit = $LASTEXITCODE
+    } finally {
+        $lockedStream.Dispose()
+    }
+    Assert-Ci ($lockedExit -ne 0) 'Locked backup prevents helper replacement'
+    $lockedResult = Get-Content -LiteralPath $lockedResultPath -Raw | ConvertFrom-Json
+    Assert-Ci ($lockedResult.Result -eq 'failed') 'Backup deletion failure writes a failed result'
+    Assert-Ci ([string]$lockedResult.Error -match 'IOException|UnauthorizedAccessException') 'Backup deletion failure records its exception type'
+    Assert-Ci ([string]$lockedResult.Error -match 'PSDynDNS[.]ps1[.]bak') 'Backup deletion failure identifies the backup'
+    Assert-Ci ((Hash-Ci $lockedOriginal) -eq $installedHash) 'Backup deletion failure preserves installed client bytes'
+    Assert-Ci ((Hash-Ci $lockedBackup) -eq $previousBackupHash) 'Backup deletion failure preserves prior backup bytes'
+
     # Inject a deterministic failure at the SECOND move operation.
     # Place the fault-injection function in the SAME script scope as the
     # extracted production helper. A wrapper script around the helper
