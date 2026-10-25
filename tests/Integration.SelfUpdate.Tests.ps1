@@ -131,8 +131,13 @@ try {
     $retry = Invoke-CiUpdate -Case 'stale-stage-and-backup' -NewText 'Write-Host "retry succeeded"' -StaleStage $true -OldBackup $true
     Assert-Ci ($retry.ExitCode -eq 0) 'Retry starts with existing staging and backup'
     Assert-Ci (Wait-CiHash -File $retry.Target -Hash $retry.NewHash) 'Retry replaces client despite stale stage'
-    Assert-Ci (Wait-CiHash -File $retry.Backup -Hash $retry.OldHash) 'Retry preserves previous installed client as backup'
-    Assert-Ci (-not (Test-Path -LiteralPath $retry.Stage)) 'Retry consumes the stage'
+    Assert-Ci ([IO.File]::ReadAllText($retry.Stage) -eq 'orphaned staging') 'Retry preserves the previous staging file'
+    Assert-Ci ([IO.File]::ReadAllText($retry.Backup) -eq 'prior backup') 'Retry preserves the earlier backup'
+    $extraBackups = @(Get-ChildItem -LiteralPath (Split-Path -Parent $retry.Target) -Filter 'PSDynDNS.ps1.bak.*')
+    Assert-Ci ($extraBackups.Count -eq 1) 'Retry creates a uniquely named backup'
+    Assert-Ci ((Hash-Ci $extraBackups[0].FullName) -eq $retry.OldHash) 'New backup contains the previously installed client'
+    $extraStages = @(Get-ChildItem -LiteralPath (Split-Path -Parent $retry.Target) -Filter 'PSDynDNS.ps1.new.*')
+    Assert-Ci ($extraStages.Count -eq 0) 'Retry consumes only its own stage'
 
     # Inject a deterministic failure at the SECOND move operation.
     # Place the fault-injection function in the SAME script scope as the
@@ -151,7 +156,7 @@ try {
     $injection = @'
 function Move-Item {
     [CmdletBinding()]
-    param([string]$LiteralPath,[string]$Destination)
+    param([string]$LiteralPath,[string]$Destination,[switch]$Force)
     if ($LiteralPath -eq $Staged -and $Destination -eq $Original) {
         throw 'Deliberately injected second move failure'
     }
