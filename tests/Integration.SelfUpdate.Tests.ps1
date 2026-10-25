@@ -122,6 +122,23 @@ try {
     Assert-Ci (Wait-CiHash -File $good.Backup -Hash $good.OldHash) 'Helper backs up previous client'
     Assert-Ci (-not (Test-Path -LiteralPath $good.Stage)) 'Helper consumes staged update'
 
+    # Existing backup should not prevent a subsequent valid swap.
+    $successDir = Split-Path -Parent $good.Target
+    $existingOld = Hash-Ci $good.Target
+    $nextText = 'Write-Host "subsequent update"'
+    $nextPayload = Join-Path $successDir 'next-payload.ps1'
+    [IO.File]::WriteAllText($nextPayload,$nextText,$utf8)
+    $env:PSDYNDNS_CI_PAYLOAD = $nextPayload
+    $env:PSDYNDNS_CI_DIGEST = Hash-Ci $nextPayload
+    try {
+        # Start a new update using the original source fixture at a new path.
+        $retry = Invoke-CiUpdate -Case 'second-success' -NewText $nextText
+        Assert-Ci ($retry.ExitCode -eq 0) 'Second update starts successfully'
+        Assert-Ci (Wait-CiHash -File $retry.Target -Hash $retry.NewHash) 'Second update replaces client'
+    } finally {
+        Remove-Item Env:PSDYNDNS_CI_PAYLOAD,Env:PSDYNDNS_CI_DIGEST -ErrorAction SilentlyContinue
+    }
+
     # Inject a deterministic failure at the SECOND move operation.
     # Place the fault-injection function in the SAME script scope as the
     # extracted production helper. A wrapper script around the helper
@@ -158,6 +175,9 @@ function Move-Item {
     Assert-Ci (Test-Path -LiteralPath $original -PathType Leaf) 'Rollback restores original file'
     Assert-Ci ((Hash-Ci $original) -eq $originalHash) 'Rollback restores original bytes'
     Assert-Ci (-not (Test-Path -LiteralPath $backup)) 'Rollback consumes temporary backup'
+    $errorRecord = Get-Content -LiteralPath (Join-Path $dir 'update-result.json') -Raw | ConvertFrom-Json
+    Assert-Ci ($errorRecord.Result -eq 'failed') 'Failed replacement writes a failure result'
+    Assert-Ci ([string]$errorRecord.Error -match 'Replacement failed; original restored') 'Failure result describes swap error and successful rollback'
     # The injected rollback failure is expected and already asserted above.
     # GitHub Actions' PowerShell wrappers exit using LASTEXITCODE when it exists,
     # even after every subsequent PowerShell assertion has passed. Clear only
