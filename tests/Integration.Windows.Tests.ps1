@@ -188,17 +188,20 @@ try {
     $stream.Dispose()
     $canWriteSecret = $true
 } catch {}
-# Reproduce an abandoned staged script with restrictive read-only ACL.
+# An old read-only stage cannot be overwritten by LOCAL SERVICE.
+# Verify a fresh uniquely named stage remains writable without touching it.
 $stale = Join-Path $PSScriptRoot 'CI-Orphan.ps1.new'
 try {
-    [IO.File]::WriteAllText($stale,'stale')
+    [IO.File]::WriteAllText($stale, 'stale')
     Set-Acl -LiteralPath $stale -AclObject (Get-Acl -LiteralPath (Join-Path $PSScriptRoot 'PSDynDNS.ps1'))
-    Remove-Item -LiteralPath $stale -Force -ErrorAction Stop
-    [IO.File]::WriteAllText($stale,'replacement')
-    $canRecoverStaleStage = ([IO.File]::ReadAllText($stale) -eq 'replacement')
+    $fresh = $stale + '.' + [guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($fresh, 'replacement')
+    $canRecoverStaleStage = ([IO.File]::ReadAllText($fresh) -eq 'replacement') -and
+        ([IO.File]::ReadAllText($stale) -eq 'stale')
 } catch {
-    Write-Host ('Stale stage cleanup rejected: ' + $_.Exception.Message)
+    Write-Host ('Stale stage retry rejected: ' + $_.Exception.Message)
 } finally {
+    Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
 }
 # Verify the production replacement moves under the actual task identity.
@@ -387,7 +390,7 @@ try {
             Assert-True $probe.CanWriteRuntime 'Task can modify runtime directory'
             Assert-True $probe.CanWriteApp 'Task can modify app directory for updates'
             Assert-True $probe.CanSwapProtectedClient 'LOCAL SERVICE can replace protected script under installed ACLs'
-            Assert-True $probe.CanRecoverStaleStage 'LOCAL SERVICE can remove and recreate a read-only abandoned update stage'
+            Assert-True $probe.CanRecoverStaleStage 'LOCAL SERVICE can stage a fresh update without modifying a protected orphan'
             Assert-True (-not $probe.CanWriteConfig) 'Task cannot modify configuration'
             Assert-True (-not $probe.CanWriteSecret) 'Task cannot modify secret'
 
