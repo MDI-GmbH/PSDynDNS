@@ -149,6 +149,19 @@ Describe 'Shared semantic release selection' {
             Should -Be $expected
         Should -Invoke Invoke-RestMethod -Times 2 -Exactly
         Should -Invoke Invoke-WebRequest -Times 2 -Exactly
+
+        # Valid manifest checksum does not make syntactically invalid PowerShell safe.
+        $script:releaseDownloadBytes = [Text.Encoding]::UTF8.GetBytes('function Unclosed {')
+        $hash = [Security.Cryptography.SHA256]::Create()
+        try {
+            $asset.digest = 'sha256:' + ([BitConverter]::ToString(
+                $hash.ComputeHash($script:releaseDownloadBytes))).Replace('-','').ToLowerInvariant()
+        } finally { $hash.Dispose() }
+        { Install-ClientFile -Channel beta -Destination $destination } |
+            Should -Throw '*syntax errors*'
+        (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() |
+            Should -Be $expected
+        Should -Invoke Invoke-WebRequest -Times 3 -Exactly
     }
     It 'accepts an Invoke-RestMethod-style nested array and retains the full asset digest' {
         $oldDigest = ('a' * 64)
