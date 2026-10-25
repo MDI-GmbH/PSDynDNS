@@ -408,13 +408,7 @@ function Test-CandidateNewer {
 }
 function Get-SelfUpdatePaths {
     param([string]$Target)
-    $stage = $Target + '.new'
-    $backup = $Target + '.bak'
-    # Old failed swaps can leave protected files that LOCAL SERVICE cannot delete.
-    # Use fresh names instead of overwriting or removing potentially valuable files.
-    if (Test-Path -LiteralPath $stage) { $stage += '.' + [guid]::NewGuid().ToString('N') }
-    if (Test-Path -LiteralPath $backup) { $backup += '.' + [guid]::NewGuid().ToString('N') }
-    return [pscustomobject]@{Stage=$stage;Backup=$backup}
+    return [pscustomobject]@{ Stage=($Target + '.new'); Backup=($Target + '.bak') }
 }
 function Start-SelfUpdate {
     param($Release)
@@ -426,6 +420,10 @@ function Start-SelfUpdate {
     $runtime = Join-Path (Split-Path -Parent (Split-Path -Parent $target)) 'runtime'
     $resultFile = Join-Path $runtime 'update-result.json'
     try {
+        # Stale stages must be removable; do not accumulate alternate filenames.
+        if (Test-Path -LiteralPath $newFile) {
+            Remove-Item -LiteralPath $newFile -Force -ErrorAction Stop
+        }
         # A new attempt replaces any previous result only after staging has
         # been validated. A missing result is not interpreted as success.
         if ($Release.Channel -eq 'main') { [IO.File]::WriteAllBytes($newFile,$Release.Content) }
@@ -452,8 +450,10 @@ try {
     $stagedAcl.SetSecurityDescriptorSddlForm(
         $installedAcl.GetSecurityDescriptorSddlForm($access), $access)
     Set-Acl -LiteralPath $Staged -AclObject $stagedAcl
-    # The backup path is selected to be unused; never delete a previous backup.
-    if (Test-Path -LiteralPath $Backup) { throw 'Backup destination already exists.' }
+    # Do not discard the previous backup unless the installed client is intact.
+    if (Test-Path -LiteralPath $Backup) {
+        Remove-Item -LiteralPath $Backup -Force -ErrorAction Stop
+    }
     Move-Item -LiteralPath $Original -Destination $Backup -ErrorAction Stop
     try {
         Move-Item -LiteralPath $Staged -Destination $Original -ErrorAction Stop
