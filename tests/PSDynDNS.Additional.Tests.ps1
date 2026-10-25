@@ -256,6 +256,29 @@ Describe 'Client HTTP, release and logging edge cases' {
     }
 }
 
+Describe 'Client CLI conflicting parameter validation' {
+    It 'rejects incompatible update switches before reading configuration' {
+        $client = Join-Path $PSScriptRoot '..\PSDynDNS.ps1'
+        $exe = if ($PSVersionTable.PSEdition -eq 'Core') {
+            (Get-Command pwsh.exe -CommandType Application).Source
+        } else {
+            Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        }
+        try {
+            $output = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $client -UpgradeChannel beta 2>&1
+            $exit = $LASTEXITCODE
+            $exit | Should -Not -Be 0
+            ([string]($output -join ' ')) | Should -Match 'requires -ForceUpgrade'
+            $output = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $client -ForceUpgrade -ForceDnsUpdate 2>&1
+            $exit = $LASTEXITCODE
+            $exit | Should -Not -Be 0
+            ([string]($output -join ' ')) | Should -Match 'not both'
+        } finally {
+            $global:LASTEXITCODE = 0
+        }
+    }
+}
+
 Describe 'Installer schedule defaults and validation' {
     It 'rejects unsupported task intervals before registering any task' {
         { Install-Task -Minutes 0 } | Should -Throw '*IntervalMinutes*'
