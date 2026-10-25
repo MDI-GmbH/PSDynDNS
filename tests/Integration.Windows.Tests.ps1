@@ -210,7 +210,7 @@ try {
         throw 'Protected staging file is missing task-specific Delete permission.'
     }
     $staleStageStep = 'remove protected orphan'
-    Remove-Item -LiteralPath $stale -Force -ErrorAction Stop
+    [IO.File]::Delete($stale)
     $staleStageStep = 'create replacement'
     [IO.File]::WriteAllText($stale, 'replacement')
     $staleStageStep = 'verify replacement'
