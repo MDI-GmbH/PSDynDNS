@@ -115,10 +115,14 @@ Describe 'State persistence' {
         Save-ClientState $path $state
         (Read-ClientState $path).LastIPv4 | Should -Be '8.8.8.8'
     }
-    It 'rejects invalid state instead of silently updating' {
+    It 'resets malformed JSON and logs a warning without a backup' {
         $path = Join-Path $TestDrive 'invalid.json'
         '{corrupt' | Set-Content $path
-        { Read-ClientState $path } | Should -Throw
+        $state = Read-ClientState $path -WarningAction SilentlyContinue
+        $state.LastIPv4 | Should -BeNullOrEmpty
+        (Get-Content $path -Raw | ConvertFrom-Json) | Should -BeOfType [pscustomobject]
+        (Get-Content (Join-Path $TestDrive 'client.log') -Raw) | Should -Match 'Invalid state.json'
+        Test-Path ($path + '.bak') | Should -BeFalse
     }
 }
 Describe 'Release response handling' {
