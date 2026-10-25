@@ -293,7 +293,7 @@ function Read-ClientState {
     catch { throw ('Cannot read state.json: ' + $_.Exception.Message) }
     try { $state = ConvertFrom-Json -InputObject $json -ErrorAction Stop }
     catch { $state = $null }
-    if ($json.TrimStart() -notmatch '^\{' -or $null -eq $state -or $state -isnot [pscustomobject]) {
+    if ($null -eq $state -or $state -isnot [pscustomobject] -or $json.TrimStart() -notmatch '^\{') {
         $state = [pscustomobject]@{}
         Write-Warning 'Invalid state.json; resetting cached state.'
         Write-ClientLog (Join-Path (Split-Path -Parent $Path) 'client.log') WARN 'Invalid state.json; resetting cached state.'
