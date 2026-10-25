@@ -458,6 +458,15 @@ try {
             Assert-Equal (Get-FileHash -LiteralPath $installedClient -Algorithm SHA256).Hash $repairHash 'Repair reinstalls missing client from local source'
             Assert-Equal (Read-InstalledSecret) $script:CiSecret 'Repair with missing client preserves secret'
 
+            # Repair must recreate missing runtime state and log without touching credentials.
+            $runtimeState = Join-Path $script:InstallRoot 'runtime\state.json'
+            $runtimeLog = Join-Path $script:InstallRoot 'runtime\client.log'
+            Remove-Item -LiteralPath $runtimeState,$runtimeLog -Force
+            Invoke-Installer -Arguments @('-Repair')
+            Assert-True (Test-Path -LiteralPath $runtimeState -PathType Leaf) 'Repair recreates missing runtime state'
+            Assert-True (Test-Path -LiteralPath $runtimeLog -PathType Leaf) 'Repair recreates missing runtime log'
+            Assert-Equal (Read-InstalledSecret) $script:CiSecret 'Runtime repair preserves DPAPI credentials'
+
             $stateFile = Join-Path $script:InstallRoot 'runtime\state.json'
             '{"BlockedReason":"badauth"}' | Set-Content -LiteralPath $stateFile -Encoding UTF8
             Invoke-Installer -Arguments @('-ResetState')
